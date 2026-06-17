@@ -1,0 +1,1 @@
+- [Launchio stack decisions](launchio-stack.md) — Vite+React (not Next.js — blocked by security policy), Express on 3001, Supabase via REST not SDK (avoids ws issue on Node 20)
