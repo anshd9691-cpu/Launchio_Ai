@@ -12,6 +12,7 @@ ALTER TABLE public.products ADD COLUMN IF NOT EXISTS creator_email text DEFAULT 
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS status       text DEFAULT 'draft' CHECK (status IN ('draft','published'));
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS slug         text;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS created_at   timestamptz DEFAULT now();
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS file_url     text;
 
 -- 2. Create products table from scratch if it doesn't exist
 CREATE TABLE IF NOT EXISTS public.products (

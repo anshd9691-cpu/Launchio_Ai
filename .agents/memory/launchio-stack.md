@@ -24,7 +24,37 @@ Existing env vars use NEXT_PUBLIC_ prefix (set by previous work). Vite requires 
 **How to apply:** When reading env in server.js, check NEXT_PUBLIC_ first. In vite.config.ts, always bridge both prefixes.
 
 ## Supabase table schema
-The existing products table may have fewer columns than the app expects (missing: type, slug, creator_email, status). The `supabase-setup.sql` file adds these via ALTER TABLE IF NOT EXISTS. RLS blocks anon inserts so demo seeding must be done via SQL Editor.
+The existing products table may have fewer columns than the app expects (missing: type, slug, creator_email, status, file_url). The `supabase-setup.sql` file adds these via ALTER TABLE IF NOT EXISTS. RLS blocks anon inserts so demo seeding must be done via SQL Editor.
 
 **Why:** Table was partially created in a previous session with different schema.
 **How to apply:** Always run supabase-setup.sql after database changes. The app gracefully handles empty product arrays.
+
+## PDF generation (pdf-lib) — text encoding
+pdf-lib's StandardFonts (Helvetica, HelveticaBold) only support Latin-1 characters. Any non-ASCII unicode (smart quotes, em dashes, ellipsis, bullet U+2022, non-breaking spaces) will throw a "WinAnsi cannot encode…" error at runtime.
+
+**Why:** pdf-lib embeds standard fonts without subsetting; they only cover WinAnsiEncoding.
+**How to apply:** Always run content through a `cleanText()` function that maps smart quotes → straight quotes, em/en dashes → hyphens, ellipsis → ..., bullet → -, and strips remaining non-ASCII before calling any `page.drawText()`.
+
+## PPTX generation (pptxgenjs)
+pptxgenjs works in ESM server.js via `import pptxgen from 'pptxgenjs'`. Use `pptx.write({ outputType: 'nodebuffer' })` to get a Buffer for upload. Courses generate .pptx; all other types (ebook, template, prompt_pack) generate PDF.
+
+**Why:** pptxgenjs is the only Node-native PPTX library that works without a headless browser.
+**How to apply:** In /api/generate-file, branch on `type === 'course'` for PPTX vs PDF.
+
+## Supabase Storage upload (service key)
+Use POST to `{SUPABASE_URL}/storage/v1/object/{bucket}/{path}` with `x-upsert: true` header. Generate signed URLs via POST to `/storage/v1/object/sign/{bucket}/{path}` with `{ expiresIn: 3600 }`. Bucket must be created first; ignore 409 conflicts.
+
+**Why:** Storage API requires service key; anon key is blocked for private buckets.
+**How to apply:** Always use SUPABASE_SERVICE_KEY for all storage operations in server.js.
+
+## Download auth flow
+Client passes Supabase session JWT as `Authorization: Bearer {token}`. Server verifies via GET `{SUPABASE_URL}/auth/v1/user` with that token. Then checks purchases table for buyer_email match OR creator_id match before issuing a signed URL.
+
+**Why:** Signed URLs must only be issued to verified purchasers — no public download links.
+**How to apply:** /api/download/:productId always requires Authorization header; returns 401 without it.
+
+## tsconfig.app.json needs vite/client types
+Without `"types": ["vite/client"]` in compilerOptions, TypeScript throws "Property 'env' does not exist on type 'ImportMeta'" on any `import.meta.env` access.
+
+**Why:** Vite's ImportMeta augmentation lives in the `vite/client` type package.
+**How to apply:** Ensure tsconfig.app.json compilerOptions includes `"types": ["vite/client"]`.

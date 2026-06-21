@@ -1,43 +1,116 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, TrendingUp, Package, DollarSign, Eye, Trash2, ExternalLink, BarChart3 } from 'lucide-react'
+import { Plus, TrendingUp, Package, DollarSign, Eye, Trash2, ExternalLink, BarChart3, Download, Edit, ShoppingBag } from 'lucide-react'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 import { supabase } from '@/lib/supabase'
 import type { Product } from '@/lib/supabase'
 
-type TabType = 'products' | 'earnings'
+type TabType = 'products' | 'earnings' | 'purchases'
+
+interface Purchase {
+  id: string
+  product_id: string
+  buyer_email: string
+  amount: number
+  creator_payout: number
+  created_at: string
+  product?: { title: string; type: string }
+}
+
+interface MyPurchase {
+  id: string
+  product_id: string
+  amount: number
+  created_at: string
+  productTitle: string
+  productType: string
+}
+
+const typeLabels: Record<string, string> = { ebook: 'Ebook', course: 'Course', template: 'Template', prompt_pack: 'Prompt Pack' }
 
 export default function DashboardPage() {
   const navigate = useNavigate()
   const [user, setUser] = useState<{ email?: string; id?: string } | null>(null)
+  const [userToken, setUserToken] = useState<string | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<TabType>('products')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [totalRevenue, setTotalRevenue] = useState(0)
   const [totalSales, setTotalSales] = useState(0)
+  const [myPurchases, setMyPurchases] = useState<MyPurchase[]>([])
+  const [purchasesLoading, setPurchasesLoading] = useState(false)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
 
-  const fetchData = useCallback(async (uid: string) => {
-    const [productsRes, purchasesRes] = await Promise.all([
+  const fetchData = useCallback(async (uid: string, email: string) => {
+    const [productsRes, salesRes] = await Promise.all([
       supabase.from('products').select('*').eq('creator_id', uid).order('created_at', { ascending: false }),
-      supabase.from('purchases').select('creator_payout').eq('product_id', 'placeholder')
+      supabase.from('purchases').select('creator_payout,product_id').in(
+        'product_id',
+        // We'll refetch after products load
+        ['00000000-0000-0000-0000-000000000000']
+      ),
     ])
     setProducts(productsRes.data ?? [])
-    const purchases = purchasesRes.data ?? []
-    setTotalSales(purchases.length)
-    setTotalRevenue(purchases.reduce((sum, p) => sum + (p.creator_payout ?? 0), 0))
     setLoading(false)
+
+    // Fetch actual sales for creator's products
+    if (productsRes.data?.length) {
+      const productIds = productsRes.data.map(p => p.id)
+      const { data: purchases } = await supabase
+        .from('purchases')
+        .select('creator_payout')
+        .in('product_id', productIds)
+      const allPurchases = purchases ?? []
+      setTotalSales(allPurchases.length)
+      setTotalRevenue(allPurchases.reduce((sum, p) => sum + (p.creator_payout ?? 0), 0))
+    }
+  }, [])
+
+  const fetchMyPurchases = useCallback(async (email: string) => {
+    setPurchasesLoading(true)
+    const { data: purchases } = await supabase
+      .from('purchases')
+      .select('id, product_id, amount, created_at')
+      .eq('buyer_email', email)
+      .order('created_at', { ascending: false })
+
+    if (!purchases?.length) { setMyPurchases([]); setPurchasesLoading(false); return }
+
+    // Fetch product details for each purchase
+    const productIds = [...new Set(purchases.map(p => p.product_id))]
+    const { data: prods } = await supabase
+      .from('products')
+      .select('id, title, type')
+      .in('id', productIds)
+
+    const prodMap: Record<string, { title: string; type: string }> = {}
+    prods?.forEach(p => { prodMap[p.id] = { title: p.title, type: p.type } })
+
+    setMyPurchases(purchases.map(p => ({
+      id: p.id,
+      product_id: p.product_id,
+      amount: p.amount,
+      created_at: p.created_at,
+      productTitle: prodMap[p.product_id]?.title ?? 'Unknown Product',
+      productType: prodMap[p.product_id]?.type ?? 'ebook',
+    })))
+    setPurchasesLoading(false)
   }, [])
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) { navigate('/login'); return }
-      setUser({ email: data.user.email, id: data.user.id })
-      fetchData(data.user.id)
+    supabase.auth.getSession().then(({ data }) => {
+      const session = data?.session
+      if (!session?.user) { navigate('/login'); return }
+      setUser({ email: session.user.email, id: session.user.id })
+      setUserToken(session.access_token)
+      fetchData(session.user.id, session.user.email ?? '')
+      fetchMyPurchases(session.user.email ?? '')
     })
-  }, [navigate, fetchData])
+  }, [navigate, fetchData, fetchMyPurchases])
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this product? This cannot be undone.')) return
@@ -53,13 +126,39 @@ export default function DashboardPage() {
     setProducts(prev => prev.map(p => p.id === product.id ? { ...p, status: newStatus } : p))
   }
 
+  const handleCopyLink = (productId: string) => {
+    navigator.clipboard.writeText(`${window.location.origin}/p/${productId}`).catch(() => {})
+    setCopiedId(productId)
+    setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  const handleDownload = async (productId: string) => {
+    if (!userToken) return
+    setDownloadingId(productId)
+    try {
+      const res = await fetch(`/api/download/${productId}`, {
+        headers: { 'Authorization': `Bearer ${userToken}` },
+      })
+      const json = await res.json()
+      if (!res.ok) { alert(json.error || 'Download failed'); setDownloadingId(null); return }
+      const a = document.createElement('a')
+      a.href = json.url
+      a.download = json.filename || `product.${json.ext}`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } catch {
+      alert('Download failed. Please try again.')
+    } finally {
+      setDownloadingId(null)
+    }
+  }
+
   const statCards = [
     { icon: <Package size={22} color="#8b5cf6" />, label: 'Products', value: products.length.toString(), sub: `${products.filter(p => p.status === 'published').length} published` },
     { icon: <TrendingUp size={22} color="#8b5cf6" />, label: 'Total Sales', value: totalSales.toString(), sub: 'all time' },
     { icon: <DollarSign size={22} color="#8b5cf6" />, label: 'Revenue', value: `$${totalRevenue.toFixed(0)}`, sub: '70% payout rate' },
   ]
-
-  const typeLabels: Record<string, string> = { ebook: 'Ebook', course: 'Course', template: 'Template', prompt_pack: 'Prompt Pack' }
 
   return (
     <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -80,7 +179,7 @@ export default function DashboardPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 16, marginBottom: 0 }}>
               {statCards.map((stat, i) => (
                 <motion.div key={i} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: i * 0.1 }}
-                  className="card-glass" style={{ borderRadius: 18, padding: '20px', display: 'flex', gap: 16, alignItems: 'center', marginBottom: 0 }}
+                  className="card-glass" style={{ borderRadius: 18, padding: '20px', display: 'flex', gap: 16, alignItems: 'center' }}
                 >
                   <div style={{ width: 46, height: 46, borderRadius: 14, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     {stat.icon}
@@ -96,12 +195,16 @@ export default function DashboardPage() {
 
             {/* Tabs */}
             <div style={{ display: 'flex', gap: 0, marginTop: 28, borderBottom: '2px solid rgba(139,92,246,0.1)' }}>
-              {([['products', 'My Products', <Package size={15} />], ['earnings', 'Earnings', <BarChart3 size={15} />]] as const).map(([t, label, icon]) => (
+              {([
+                ['products', 'My Products', <Package size={15} />],
+                ['earnings', 'Earnings', <BarChart3 size={15} />],
+                ['purchases', 'My Purchases', <ShoppingBag size={15} />],
+              ] as const).map(([t, label, icon]) => (
                 <button key={t} onClick={() => setTab(t as TabType)} style={{
                   display: 'flex', alignItems: 'center', gap: 7, padding: '10px 20px', fontSize: 14, fontWeight: 700,
                   color: tab === t ? '#8b5cf6' : '#4c4879',
                   borderBottom: tab === t ? '2px solid #8b5cf6' : '2px solid transparent',
-                  marginBottom: -2, background: 'none', transition: 'all 0.2s',
+                  marginBottom: -2, background: 'none', border: 'none', cursor: 'pointer', transition: 'all 0.2s',
                 }}>
                   {icon} {label}
                 </button>
@@ -113,6 +216,8 @@ export default function DashboardPage() {
         {/* Content */}
         <div style={{ maxWidth: 1200, margin: '0 auto', padding: '36px 24px 80px' }}>
           <AnimatePresence mode="wait">
+
+            {/* ── My Products tab ─────────────────────────────────────────── */}
             {tab === 'products' && (
               <motion.div key="products" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
@@ -150,14 +255,19 @@ export default function DashboardPage() {
                         <div style={{ width: 46, height: 46, borderRadius: 14, background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                           <span style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 900, fontSize: 20, color: 'rgba(255,255,255,0.85)' }}>{product.title[0]?.toUpperCase()}</span>
                         </div>
+
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <p style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 15, color: '#1e1b4b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{product.title}</p>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 5, flexWrap: 'wrap' }}>
                             <span className={`badge-${product.type}`}>{typeLabels[product.type] ?? product.type}</span>
                             <span style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 800, fontSize: 15, color: '#1e1b4b' }}>${product.price}</span>
+                            {product.status === 'draft' && (
+                              <span style={{ fontSize: 11, color: '#a5a3c0', fontWeight: 600 }}>· Not visible to public</span>
+                            )}
                           </div>
                         </div>
-                        {/* Toggle */}
+
+                        {/* Status toggle */}
                         <button onClick={() => handleToggleStatus(product)} style={{
                           padding: '5px 14px', borderRadius: 20, fontSize: 11, fontWeight: 700, cursor: 'pointer', border: 'none', transition: 'all 0.2s',
                           background: product.status === 'published' ? '#dcfce7' : '#f5f3ff',
@@ -165,14 +275,34 @@ export default function DashboardPage() {
                         }}>
                           {product.status === 'published' ? '● Live' : '○ Draft'}
                         </button>
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          <Link to={`/p/${product.id}`} target="_blank" title="View public page"
-                            style={{ width: 34, height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8b5cf6' }}
-                          >
-                            <Eye size={15} />
-                          </Link>
+
+                        {/* Actions */}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {product.status === 'published' ? (
+                            /* Published: View, Copy link, Download */
+                            <>
+                              <Link to={`/p/${product.id}`} target="_blank" title="View public page"
+                                style={{ width: 34, height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8b5cf6' }}
+                              >
+                                <Eye size={15} />
+                              </Link>
+                              <button onClick={() => handleCopyLink(product.id)} title="Copy share link"
+                                style={{ padding: '0 12px', height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', gap: 5, color: '#8b5cf6', cursor: 'pointer', border: 'none', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}
+                              >
+                                <ExternalLink size={13} /> {copiedId === product.id ? 'Copied!' : 'Share'}
+                              </button>
+                            </>
+                          ) : (
+                            /* Draft: Continue editing only */
+                            <Link to="/create" title="Continue editing"
+                              style={{ padding: '0 14px', height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', gap: 5, color: '#8b5cf6', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
+                            >
+                              <Edit size={13} /> Continue Editing
+                            </Link>
+                          )}
+
                           <button onClick={() => handleDelete(product.id)} disabled={deletingId === product.id} title="Delete"
-                            style={{ width: 34, height: 34, borderRadius: 10, background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#dc2626', cursor: 'pointer' }}
+                            style={{ width: 34, height: 34, borderRadius: 10, background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#dc2626', cursor: 'pointer', border: 'none' }}
                           >
                             {deletingId === product.id ? <span style={{ width: 14, height: 14, border: '2px solid #fca5a5', borderTopColor: '#dc2626', borderRadius: '50%', display: 'inline-block' }} className="spin" /> : <Trash2 size={15} />}
                           </button>
@@ -184,6 +314,7 @@ export default function DashboardPage() {
               </motion.div>
             )}
 
+            {/* ── Earnings tab ─────────────────────────────────────────────── */}
             {tab === 'earnings' && (
               <motion.div key="earnings" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 18, marginBottom: 32 }}>
@@ -202,12 +333,79 @@ export default function DashboardPage() {
                   ))}
                 </div>
                 <div style={{ textAlign: 'center', padding: '48px 24px', background: '#f5f3ff', borderRadius: 24, border: '1px solid rgba(139,92,246,0.12)' }}>
-                  <ExternalLink size={32} color="#c4b5fd" style={{ margin: '0 auto 14px' }} />
+                  <BarChart3 size={32} color="#c4b5fd" style={{ margin: '0 auto 14px', display: 'block' }} />
                   <p style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 17, color: '#1e1b4b', marginBottom: 8 }}>Detailed earnings coming soon</p>
                   <p style={{ color: '#4c4879', fontSize: 14 }}>Your purchase history and payout details will appear here once you make your first sale.</p>
                 </div>
               </motion.div>
             )}
+
+            {/* ── My Purchases tab ─────────────────────────────────────────── */}
+            {tab === 'purchases' && (
+              <motion.div key="purchases" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+                <h2 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 18, color: '#1e1b4b', marginBottom: 24 }}>Products You've Bought</h2>
+
+                {purchasesLoading ? (
+                  <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
+                    <div style={{ width: 36, height: 36, border: '3px solid #e9d5ff', borderTopColor: '#8b5cf6', borderRadius: '50%' }} className="spin" />
+                  </div>
+                ) : myPurchases.length === 0 ? (
+                  <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+                    style={{ textAlign: 'center', padding: '64px 24px', background: '#f5f3ff', borderRadius: 24, border: '2px dashed rgba(139,92,246,0.2)' }}
+                  >
+                    <div style={{ width: 70, height: 70, borderRadius: 22, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', boxShadow: '0 4px 20px rgba(139,92,246,0.1)' }}>
+                      <ShoppingBag size={30} color="#c4b5fd" />
+                    </div>
+                    <h3 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 800, fontSize: 20, color: '#1e1b4b', marginBottom: 8 }}>No purchases yet</h3>
+                    <p style={{ color: '#4c4879', marginBottom: 24 }}>Browse the marketplace and find your next digital product.</p>
+                    <Link to="/explore" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '12px 24px', borderRadius: 14, fontSize: 14, fontWeight: 700 }} className="btn-gradient">
+                      Explore Products
+                    </Link>
+                  </motion.div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {myPurchases.map((purchase, i) => (
+                      <motion.div key={purchase.id} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: i * 0.06 }}
+                        className="card-glass" style={{ borderRadius: 18, padding: '20px 22px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}
+                      >
+                        <div style={{ width: 46, height: 46, borderRadius: 14, background: 'linear-gradient(135deg,#059669,#10b981)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <Download size={20} color="rgba(255,255,255,0.9)" />
+                        </div>
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 15, color: '#1e1b4b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{purchase.productTitle}</p>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 5, flexWrap: 'wrap' }}>
+                            <span className={`badge-${purchase.productType}`}>{typeLabels[purchase.productType] ?? purchase.productType}</span>
+                            <span style={{ fontSize: 12, color: '#4c4879' }}>Paid ${purchase.amount.toFixed(2)}</span>
+                            <span style={{ fontSize: 12, color: '#a5a3c0' }}>· {new Date(purchase.created_at).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <Link to={`/p/${purchase.product_id}`}
+                            style={{ height: 34, padding: '0 12px', borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', color: '#8b5cf6', fontSize: 12, fontWeight: 700, gap: 5 }}
+                          >
+                            <Eye size={13} /> View
+                          </Link>
+                          <motion.button whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}
+                            onClick={() => handleDownload(purchase.product_id)}
+                            disabled={downloadingId === purchase.product_id}
+                            style={{ height: 34, padding: '0 16px', borderRadius: 10, background: 'linear-gradient(135deg,#059669,#10b981)', display: 'flex', alignItems: 'center', gap: 6, color: '#fff', fontSize: 12, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: downloadingId === purchase.product_id ? 0.7 : 1 }}
+                          >
+                            {downloadingId === purchase.product_id
+                              ? <span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block' }} className="spin" />
+                              : <Download size={14} />
+                            }
+                            Download
+                          </motion.button>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            )}
+
           </AnimatePresence>
         </div>
       </div>

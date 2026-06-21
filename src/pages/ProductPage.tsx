@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ShoppingCart, Shield, Download, Clock, ArrowLeft, BookOpen, GraduationCap, Layout, Sparkles } from 'lucide-react'
+import { ShoppingCart, Shield, Download, Clock, ArrowLeft, BookOpen, GraduationCap, Layout, Sparkles, Lock, CheckCircle } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import type { Product } from '@/lib/supabase'
 
@@ -25,17 +25,59 @@ export default function ProductPage() {
   const { id } = useParams<{ id: string }>()
   const [product, setProduct] = useState<Product | null>(null)
   const [loading, setLoading] = useState(true)
+  const [notFound, setNotFound] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const [hasPurchased, setHasPurchased] = useState(false)
+  const [downloadLoading, setDownloadLoading] = useState(false)
+  const [downloadError, setDownloadError] = useState('')
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [userToken, setUserToken] = useState<string | null>(null)
 
   useEffect(() => {
     if (!id) return
-    supabase.from('products').select('*').eq('id', id).single().then(({ data }) => {
-      setProduct(data); setLoading(false)
-    })
-    // Check for success param
-    if (window.location.search.includes('success=true')) setSuccess(true)
+
+    const init = async () => {
+      // Get product
+      const { data } = await supabase.from('products').select('*').eq('id', id).single()
+
+      // Only show published products to the public
+      if (!data || data.status !== 'published') {
+        setNotFound(true)
+        setLoading(false)
+        return
+      }
+
+      setProduct(data)
+
+      // Check for success param
+      if (window.location.search.includes('success=true')) setSuccess(true)
+
+      // Get current user session
+      const { data: sessionData } = await supabase.auth.getSession()
+      const session = sessionData?.session
+      if (session?.user?.email) {
+        setUserEmail(session.user.email)
+        setUserToken(session.access_token)
+
+        // Check if user has purchased this product
+        const { data: purchases } = await supabase
+          .from('purchases')
+          .select('id')
+          .eq('product_id', id)
+          .eq('buyer_email', session.user.email)
+          .limit(1)
+
+        if (purchases && purchases.length > 0) {
+          setHasPurchased(true)
+        }
+      }
+
+      setLoading(false)
+    }
+
+    init()
   }, [id])
 
   const handleBuy = async () => {
@@ -57,6 +99,34 @@ export default function ProductPage() {
     }
   }
 
+  const handleDownload = async () => {
+    if (!userToken || !id) return
+    setDownloadLoading(true)
+    setDownloadError('')
+    try {
+      const res = await fetch(`/api/download/${id}`, {
+        headers: { 'Authorization': `Bearer ${userToken}` },
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setDownloadError(json.error || 'Download failed.')
+        setDownloadLoading(false)
+        return
+      }
+      // Trigger download
+      const a = document.createElement('a')
+      a.href = json.url
+      a.download = json.filename || `product.${json.ext}`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } catch {
+      setDownloadError('Download failed. Please try again.')
+    } finally {
+      setDownloadLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}>
@@ -65,12 +135,15 @@ export default function ProductPage() {
     )
   }
 
-  if (!product) {
+  if (notFound || !product) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f5f3ff', padding: 24, textAlign: 'center' }}>
+        <div style={{ width: 72, height: 72, borderRadius: 22, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', boxShadow: '0 4px 20px rgba(139,92,246,0.1)' }}>
+          <Lock size={30} color="#c4b5fd" />
+        </div>
         <h2 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 800, fontSize: 26, color: '#1e1b4b', marginBottom: 12 }}>Product not found</h2>
-        <p style={{ color: '#4c4879', marginBottom: 24 }}>This product may have been removed or the link is incorrect.</p>
-        <Link to="/explore" style={{ padding: '12px 24px', borderRadius: 14, fontWeight: 700 }} className="btn-gradient">Browse Products</Link>
+        <p style={{ color: '#4c4879', marginBottom: 24 }}>This product may have been removed, is not yet published, or the link is incorrect.</p>
+        <Link to="/explore" style={{ padding: '12px 24px', borderRadius: 14, fontWeight: 700, display: 'inline-flex' }} className="btn-gradient">Browse Products</Link>
       </div>
     )
   }
@@ -87,7 +160,7 @@ export default function ProductPage() {
           <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
             style={{ padding: '14px 18px', borderRadius: 14, background: '#dcfce7', border: '1px solid #86efac', color: '#15803d', fontSize: 14, fontWeight: 600, marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}
           >
-            Payment successful! Check your email for access.
+            <CheckCircle size={16} /> Payment successful! Your download is now unlocked below.
           </motion.div>
         )}
 
@@ -126,20 +199,40 @@ export default function ProductPage() {
             </div>
 
             {error && <p style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 12, padding: '10px 14px', marginBottom: 16 }}>{error}</p>}
+            {downloadError && <p style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 12, padding: '10px 14px', marginBottom: 16 }}>{downloadError}</p>}
 
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleBuy} disabled={checkoutLoading}
-              className="btn-gradient" style={{ width: '100%', padding: '16px', borderRadius: 16, fontSize: 16, fontWeight: 700, opacity: checkoutLoading ? 0.75 : 1, marginBottom: 22 }}
-            >
-              {checkoutLoading
-                ? <span style={{ display: 'inline-block', width: 20, height: 20, border: '2.5px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%' }} className="spin" />
-                : <><ShoppingCart size={18} style={{ display: 'inline', marginRight: 8 }} />Buy Now — ${product.price}</>
-              }
-            </motion.button>
+            {hasPurchased ? (
+              /* Already purchased — show download button */
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+                <div style={{ padding: '12px 16px', background: '#dcfce7', border: '1px solid #86efac', borderRadius: 14, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <CheckCircle size={16} color="#15803d" />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#15803d' }}>You own this product</span>
+                </div>
+                <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleDownload} disabled={downloadLoading}
+                  style={{ width: '100%', padding: '16px', borderRadius: 16, fontSize: 16, fontWeight: 700, opacity: downloadLoading ? 0.75 : 1, marginBottom: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'linear-gradient(135deg,#059669,#10b981)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                >
+                  {downloadLoading
+                    ? <span style={{ display: 'inline-block', width: 20, height: 20, border: '2.5px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%' }} className="spin" />
+                    : <><Download size={18} /> Download {TYPE_LABELS[product.type]}</>
+                  }
+                </motion.button>
+              </motion.div>
+            ) : (
+              /* Not purchased — show buy button */
+              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleBuy} disabled={checkoutLoading}
+                className="btn-gradient" style={{ width: '100%', padding: '16px', borderRadius: 16, fontSize: 16, fontWeight: 700, opacity: checkoutLoading ? 0.75 : 1, marginBottom: 22, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                {checkoutLoading
+                  ? <span style={{ display: 'inline-block', width: 20, height: 20, border: '2.5px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%' }} className="spin" />
+                  : <><ShoppingCart size={18} style={{ display: 'inline', marginRight: 8 }} />Buy Now — ${product.price}</>
+                }
+              </motion.button>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11, borderTop: '1px solid rgba(139,92,246,0.1)', paddingTop: 20 }}>
               {[
                 { icon: <Shield size={14} />, text: '30-day money-back guarantee' },
-                { icon: <Download size={14} />, text: 'Instant digital delivery' },
+                { icon: <Download size={14} />, text: `Instant ${product.type === 'course' ? 'PPTX' : 'PDF'} delivery after purchase` },
                 { icon: <Clock size={14} />, text: 'Lifetime access included' },
               ].map((item, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#4c4879' }}>

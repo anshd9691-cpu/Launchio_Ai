@@ -28,6 +28,7 @@ export interface Product {
   status: ProductStatus
   slug: string
   created_at: string
+  file_url?: string
 }
 
 export interface Purchase {
