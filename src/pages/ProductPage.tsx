@@ -57,20 +57,19 @@ export default function ProductPage() {
       // Get current user session
       const { data: sessionData } = await supabase.auth.getSession()
       const session = sessionData?.session
-      if (session?.user?.email) {
-        setUserEmail(session.user.email)
+      if (session?.access_token) {
+        setUserEmail(session.user?.email ?? null)
         setUserToken(session.access_token)
 
-        // Check if user has purchased this product
-        const { data: purchases } = await supabase
-          .from('purchases')
-          .select('id')
-          .eq('product_id', id)
-          .eq('buyer_email', session.user.email)
-          .limit(1)
-
-        if (purchases && purchases.length > 0) {
-          setHasPurchased(true)
+        // Check purchase via server endpoint (uses service key — bypasses RLS correctly)
+        try {
+          const res = await fetch(`/api/product/${id}/is-purchased`, {
+            headers: { 'Authorization': `Bearer ${session.access_token}` },
+          })
+          const json = await res.json()
+          if (json.purchased) setHasPurchased(true)
+        } catch {
+          // Non-fatal — user just won't see download button yet
         }
       }
 

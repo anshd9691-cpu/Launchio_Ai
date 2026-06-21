@@ -1,74 +1,87 @@
--- ============================================
--- Launchio Database Setup
--- Run this in: https://supabase.com/dashboard/project/vvpucasvyifmxqcavktg/sql/new
--- ============================================
+-- ============================================================
+-- Launchio Database Migration
+-- Run this ONCE in the Supabase SQL Editor:
+-- https://supabase.com/dashboard/project/vvpucasvyifmxqcavktg/sql/new
+-- ============================================================
 
--- 1. Add missing columns to existing products table (safe - uses IF NOT EXISTS pattern)
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS description  text DEFAULT '';
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS type         text DEFAULT 'ebook' CHECK (type IN ('ebook','course','template','prompt_pack'));
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS price        numeric(10,2) DEFAULT 0;
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS creator_id   text DEFAULT '';
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS creator_email text DEFAULT '';
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS status       text DEFAULT 'draft' CHECK (status IN ('draft','published'));
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS slug         text;
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS created_at   timestamptz DEFAULT now();
-ALTER TABLE public.products ADD COLUMN IF NOT EXISTS file_url     text;
+-- ── 1. Add missing columns to products table ─────────────────
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS description   text        DEFAULT '';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS type          text        DEFAULT 'ebook';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS price         numeric(10,2) DEFAULT 0;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS creator_id    text        DEFAULT '';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS creator_email text        DEFAULT '';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS status        text        DEFAULT 'draft';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS slug          text;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS file_url      text;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS created_at    timestamptz DEFAULT now();
 
--- 2. Create products table from scratch if it doesn't exist
+-- Add slug unique constraint (safe to run even if it exists)
+DO $$ BEGIN
+  ALTER TABLE public.products ADD CONSTRAINT products_slug_key UNIQUE (slug);
+EXCEPTION WHEN duplicate_table THEN NULL;
+          WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Add CHECK constraints (safe)
+DO $$ BEGIN
+  ALTER TABLE public.products ADD CONSTRAINT products_type_check
+    CHECK (type IN ('ebook','course','template','prompt_pack'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE public.products ADD CONSTRAINT products_status_check
+    CHECK (status IN ('draft','published'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ── 2. Create products table from scratch (only if it doesn't exist) ──
 CREATE TABLE IF NOT EXISTS public.products (
-  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  title         text NOT NULL DEFAULT '',
-  description   text DEFAULT '',
-  type          text DEFAULT 'ebook' CHECK (type IN ('ebook','course','template','prompt_pack')),
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  title         text        NOT NULL DEFAULT '',
+  description   text        DEFAULT '',
+  type          text        DEFAULT 'ebook'  CHECK (type   IN ('ebook','course','template','prompt_pack')),
   price         numeric(10,2) DEFAULT 0,
-  creator_id    text DEFAULT '',
-  creator_email text DEFAULT '',
-  status        text DEFAULT 'draft' CHECK (status IN ('draft','published')),
-  slug          text,
+  creator_id    text        DEFAULT '',
+  creator_email text        DEFAULT '',
+  status        text        DEFAULT 'draft'  CHECK (status IN ('draft','published')),
+  slug          text        UNIQUE,
+  file_url      text,
   created_at    timestamptz DEFAULT now()
 );
 
--- 3. Enable RLS
+-- ── 3. Enable RLS on products ─────────────────────────────────
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 
--- 4. Drop old policies (ignore errors if they don't exist)
 DROP POLICY IF EXISTS "Public can read published products" ON public.products;
-DROP POLICY IF EXISTS "Creators can read own products" ON public.products;
-DROP POLICY IF EXISTS "Creators can insert products" ON public.products;
-DROP POLICY IF EXISTS "Creators can update own products" ON public.products;
-DROP POLICY IF EXISTS "Creators can delete own products" ON public.products;
+DROP POLICY IF EXISTS "Creators can read own products"     ON public.products;
+DROP POLICY IF EXISTS "Creators can insert products"       ON public.products;
+DROP POLICY IF EXISTS "Creators can update own products"   ON public.products;
+DROP POLICY IF EXISTS "Creators can delete own products"   ON public.products;
 
--- 5. Create RLS policies
--- Anyone (including anonymous) can read published products
+-- Anyone (including unauthenticated) can read published products
 CREATE POLICY "Public can read published products"
-  ON public.products FOR SELECT
-  USING (status = 'published');
+  ON public.products FOR SELECT USING (status = 'published');
 
--- Authenticated users can read their own products (any status)
+-- Authenticated creators can read all their own products (any status)
 CREATE POLICY "Creators can read own products"
-  ON public.products FOR SELECT
-  USING (auth.uid()::text = creator_id);
+  ON public.products FOR SELECT USING (auth.uid()::text = creator_id);
 
--- Authenticated users can insert their own products
+-- Creators can insert their own products
 CREATE POLICY "Creators can insert products"
-  ON public.products FOR INSERT
-  WITH CHECK (auth.uid()::text = creator_id);
+  ON public.products FOR INSERT WITH CHECK (auth.uid()::text = creator_id);
 
 -- Creators can update their own products
 CREATE POLICY "Creators can update own products"
-  ON public.products FOR UPDATE
-  USING (auth.uid()::text = creator_id);
+  ON public.products FOR UPDATE USING (auth.uid()::text = creator_id);
 
 -- Creators can delete their own products
 CREATE POLICY "Creators can delete own products"
-  ON public.products FOR DELETE
-  USING (auth.uid()::text = creator_id);
+  ON public.products FOR DELETE USING (auth.uid()::text = creator_id);
 
--- 6. Purchases table
+-- ── 4. Purchases table ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.purchases (
-  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  product_id     uuid REFERENCES public.products(id) ON DELETE SET NULL,
-  buyer_email    text DEFAULT '',
+  id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id     uuid        REFERENCES public.products(id) ON DELETE SET NULL,
+  buyer_email    text        DEFAULT '',
   amount         numeric(10,2) DEFAULT 0,
   creator_payout numeric(10,2) DEFAULT 0,
   platform_fee   numeric(10,2) DEFAULT 0,
@@ -77,20 +90,27 @@ CREATE TABLE IF NOT EXISTS public.purchases (
 
 ALTER TABLE public.purchases ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Creators can read own purchases" ON public.purchases;
-DROP POLICY IF EXISTS "Service role inserts" ON public.purchases;
+DROP POLICY IF EXISTS "Creators can read own purchases"      ON public.purchases;
+DROP POLICY IF EXISTS "Buyers can read own purchases"        ON public.purchases;
+DROP POLICY IF EXISTS "Service role inserts"                 ON public.purchases;
+DROP POLICY IF EXISTS "Service role can insert purchases"    ON public.purchases;
 
+-- Creators see purchases on their products
 CREATE POLICY "Creators can read own purchases"
-  ON public.purchases FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.products p
-      WHERE p.id = product_id
-        AND p.creator_id = auth.uid()::text
-    )
+  ON public.purchases FOR SELECT USING (
+    EXISTS (SELECT 1 FROM public.products p
+            WHERE p.id = product_id AND p.creator_id = auth.uid()::text)
   );
 
--- 7. Seed demo products (idempotent)
+-- Buyers can see their own purchases
+CREATE POLICY "Buyers can read own purchases"
+  ON public.purchases FOR SELECT USING (buyer_email = auth.email());
+
+-- Server-side webhook handler inserts (uses service key, bypasses RLS)
+CREATE POLICY "Service role can insert purchases"
+  ON public.purchases FOR INSERT WITH CHECK (true);
+
+-- ── 5. Seed demo products (safe / idempotent) ─────────────────
 INSERT INTO public.products (title, description, type, price, creator_id, creator_email, status, slug)
 VALUES
   ('The AI Creator''s Complete Handbook',
@@ -127,5 +147,6 @@ VALUES
 
 ON CONFLICT (slug) DO NOTHING;
 
--- Done! ✓
-SELECT 'Launchio setup complete! Products: ' || count(*)::text FROM public.products;
+-- ── Done! ─────────────────────────────────────────────────────
+SELECT 'Setup complete! Products in table: ' || count(*)::text AS result
+FROM public.products;

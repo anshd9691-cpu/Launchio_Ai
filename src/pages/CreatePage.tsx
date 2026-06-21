@@ -67,6 +67,9 @@ export default function CreatePage() {
   const [publishError, setPublishError] = useState('')
   const [createdId, setCreatedId] = useState('')
 
+  // DB schema state
+  const [schemaReady, setSchemaReady] = useState<boolean | null>(null)
+
   const selectedType = TYPES.find(t => t.id === type)!
 
   useEffect(() => {
@@ -74,6 +77,7 @@ export default function CreatePage() {
       if (!data.user) navigate('/login')
       else setUser({ id: data.user.id, email: data.user.email ?? '' })
     })
+    fetch('/api/schema-check').then(r => r.json()).then(j => setSchemaReady(j.ready)).catch(() => setSchemaReady(null))
   }, [navigate])
 
   // Scroll to bottom of chat
@@ -215,6 +219,21 @@ export default function CreatePage() {
     <div style={{ minHeight: '100vh', background: '#fff' }}>
       <Navbar />
       <div style={{ paddingTop: 64 }}>
+
+        {/* DB schema warning banner */}
+        {schemaReady === false && (
+          <div style={{ background: '#fef3c7', borderBottom: '1px solid #fcd34d', padding: '12px 24px', textAlign: 'center' }}>
+            <span style={{ color: '#92400e', fontWeight: 600, fontSize: 14 }}>
+              ⚠️ Database setup required before you can publish.{' '}
+              <a href="https://supabase.com/dashboard/project/vvpucasvyifmxqcavktg/sql/new" target="_blank" rel="noreferrer"
+                style={{ color: '#6366f1', textDecoration: 'underline' }}>
+                Open Supabase SQL Editor
+              </a>
+              {' '}and paste + run the contents of{' '}
+              <code style={{ background: '#fde68a', borderRadius: 4, padding: '1px 5px' }}>supabase-setup.sql</code>.
+            </span>
+          </div>
+        )}
 
         {/* Progress bar */}
         <div style={{ maxWidth: step === 2 ? '100%' : 660, margin: '0 auto', padding: step === 2 ? '24px 24px 0' : '32px 16px 0' }}>

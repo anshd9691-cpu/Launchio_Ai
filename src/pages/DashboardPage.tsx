@@ -70,35 +70,20 @@ export default function DashboardPage() {
     }
   }, [])
 
-  const fetchMyPurchases = useCallback(async (email: string) => {
+  const fetchMyPurchases = useCallback(async (token: string) => {
     setPurchasesLoading(true)
-    const { data: purchases } = await supabase
-      .from('purchases')
-      .select('id, product_id, amount, created_at')
-      .eq('buyer_email', email)
-      .order('created_at', { ascending: false })
-
-    if (!purchases?.length) { setMyPurchases([]); setPurchasesLoading(false); return }
-
-    // Fetch product details for each purchase
-    const productIds = [...new Set(purchases.map(p => p.product_id))]
-    const { data: prods } = await supabase
-      .from('products')
-      .select('id, title, type')
-      .in('id', productIds)
-
-    const prodMap: Record<string, { title: string; type: string }> = {}
-    prods?.forEach(p => { prodMap[p.id] = { title: p.title, type: p.type } })
-
-    setMyPurchases(purchases.map(p => ({
-      id: p.id,
-      product_id: p.product_id,
-      amount: p.amount,
-      created_at: p.created_at,
-      productTitle: prodMap[p.product_id]?.title ?? 'Unknown Product',
-      productType: prodMap[p.product_id]?.type ?? 'ebook',
-    })))
-    setPurchasesLoading(false)
+    try {
+      const res = await fetch('/api/user/purchases', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Failed to load purchases')
+      setMyPurchases(json.purchases ?? [])
+    } catch {
+      setMyPurchases([])
+    } finally {
+      setPurchasesLoading(false)
+    }
   }, [])
 
   useEffect(() => {
@@ -108,7 +93,7 @@ export default function DashboardPage() {
       setUser({ email: session.user.email, id: session.user.id })
       setUserToken(session.access_token)
       fetchData(session.user.id, session.user.email ?? '')
-      fetchMyPurchases(session.user.email ?? '')
+      fetchMyPurchases(session.access_token)
     })
   }, [navigate, fetchData, fetchMyPurchases])
 

@@ -434,6 +434,20 @@ app.post('/api/send-confirmation', async (req, res) => {
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
+// GET /api/schema-check — tells the frontend if the DB migration has been run
+app.get('/api/schema-check', async (_req, res) => {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/products?select=type,status,creator_id,slug,file_url&limit=0`, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+    })
+    if (r.ok) return res.json({ ready: true })
+    const body = await r.json()
+    return res.json({ ready: false, hint: body?.message || 'Schema not migrated' })
+  } catch (e) {
+    return res.json({ ready: false, hint: e.message })
+  }
+})
+
 // POST /api/agent — AI content agent
 app.post('/api/agent', async (req, res) => {
   const { messages = [], productType = 'ebook', currentContent = '' } = req.body
@@ -496,26 +510,54 @@ ALWAYS return this exact JSON structure:
     }
   }
 
-  try {
-    const gemRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          contents,
-          generationConfig: { temperature: 0.85, maxOutputTokens: 8192 },
-        }),
-      }
-    )
+  // Fallback model chain — tried in order, skips on 429 quota errors
+  const GEMINI_MODELS = [
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-2.5-flash-lite',
+    'gemini-flash-lite-latest',
+  ]
 
-    const gemJson = await gemRes.json()
-    if (!gemRes.ok) {
-      console.error('Gemini error:', JSON.stringify(gemJson))
-      return res.status(502).json({ error: 'AI service error. Please try again.' })
+  const geminiPayload = {
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents,
+    generationConfig: { temperature: 0.85, maxOutputTokens: 8192 },
+  }
+
+  let lastError = 'AI service error. Please try again.'
+
+  for (const model of GEMINI_MODELS) {
+    let gemRes, gemJson
+    try {
+      gemRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiPayload) }
+      )
+      gemJson = await gemRes.json()
+    } catch (err) {
+      lastError = 'Network error reaching AI. Please try again.'
+      continue
     }
 
+    if (!gemRes.ok) {
+      const code = gemJson?.error?.code
+      const status = gemJson?.error?.status
+      console.warn(`Gemini ${model}: ${code} ${status}`)
+      // 429 quota exhausted — try next model
+      if (code === 429 || status === 'RESOURCE_EXHAUSTED') {
+        lastError = 'AI is busy — trying backup model…'
+        continue
+      }
+      // 404 model not found — try next model
+      if (code === 404 || status === 'NOT_FOUND') {
+        continue
+      }
+      // Other errors are terminal
+      lastError = gemJson?.error?.message || 'AI service error. Please try again.'
+      break
+    }
+
+    // Success — parse response
     const rawText = gemJson?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
     const cleaned = rawText.replace(/```json\n?|```\n?/g, '').trim()
 
@@ -523,13 +565,14 @@ ALWAYS return this exact JSON structure:
     try {
       parsed = JSON.parse(cleaned)
     } catch {
-      // Try to extract JSON from the text
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
       if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0])
-      } else {
-        return res.status(500).json({ error: 'AI returned unexpected format. Please try again.' })
+        try { parsed = JSON.parse(jsonMatch[0]) } catch { /* fall through */ }
       }
+    }
+
+    if (!parsed) {
+      return res.status(500).json({ error: 'AI returned unexpected format. Please try again.' })
     }
 
     return res.json({
@@ -538,10 +581,15 @@ ALWAYS return this exact JSON structure:
       description: parsed.description || '',
       content: parsed.content || '',
     })
-  } catch (err) {
-    console.error('Agent error:', err)
-    return res.status(500).json({ error: 'AI agent failed. Please try again.' })
   }
+
+  // All models failed
+  console.error('All Gemini models exhausted. Last error:', lastError)
+  return res.status(503).json({
+    error: lastError.includes('busy') || lastError.includes('quota')
+      ? 'AI quota exhausted on all models. Please wait a few minutes and try again, or check your Gemini API plan.'
+      : lastError,
+  })
 })
 
 // POST /api/ai-generate — Legacy simple generate (kept for backward compat)
@@ -551,18 +599,101 @@ app.post('/api/ai-generate', async (req, res) => {
   if (!apiKey) return res.status(503).json({ error: 'AI not configured' })
   const typeDescriptions = { ebook: 'a digital ebook', course: 'an online course', template: 'a digital template', prompt_pack: 'an AI prompt pack' }
   const prompt = `Generate a compelling product listing for ${typeDescriptions[type] ?? 'a digital product'} that a creator could sell online.\nReturn ONLY valid JSON: {"title":"Catchy product title (max 80 chars)","description":"Persuasive 2-3 sentence description","price":29}`
+  const payload = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.9, maxOutputTokens: 256 } }
+  for (const model of ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash-lite']) {
+    try {
+      const gemRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
+      const gemJson = await gemRes.json()
+      if (!gemRes.ok) { if (gemJson?.error?.code === 429 || gemJson?.error?.code === 404) continue; break }
+      const text = gemJson?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim())
+      return res.json(parsed)
+    } catch { continue }
+  }
+  return res.status(500).json({ error: 'AI generation failed' })
+})
+
+// GET /api/product/:id/is-purchased — Server-side purchase check (uses service key, bypasses RLS)
+app.get('/api/product/:id/is-purchased', async (req, res) => {
+  const { id } = req.params
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.json({ purchased: false, reason: 'not_authenticated' })
+
   try {
-    const gemRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.9, maxOutputTokens: 256 } }),
+    const userData = await verifySupabaseJWT(token)
+    if (!userData?.user) return res.json({ purchased: false, reason: 'invalid_token' })
+
+    const userEmail = userData.user.email
+    const userId = userData.user.id
+
+    // Check if creator (creators can always download their own published products)
+    const { data: products } = await dbQuery('products', { 'id': `eq.${id}`, 'limit': '1' })
+    const product = products?.[0]
+    if (product?.creator_id === userId) {
+      return res.json({ purchased: true, isCreator: true })
+    }
+
+    // Check purchase record using service key (bypasses RLS)
+    const { data: purchases } = await dbQuery('purchases', {
+      'product_id': `eq.${id}`,
+      'buyer_email': `eq.${userEmail}`,
+      'limit': '1',
     })
-    const gemJson = await gemRes.json()
-    const text = gemJson?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim())
-    return res.json(parsed)
-  } catch {
-    return res.status(500).json({ error: 'AI generation failed' })
+
+    return res.json({ purchased: purchases?.length > 0, isCreator: false })
+  } catch (err) {
+    console.error('is-purchased error:', err)
+    return res.json({ purchased: false, reason: 'error' })
+  }
+})
+
+// GET /api/user/purchases — All purchases for the logged-in user (service key, bypasses RLS)
+app.get('/api/user/purchases', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.status(401).json({ error: 'Unauthorized' })
+
+  try {
+    const userData = await verifySupabaseJWT(token)
+    if (!userData?.user) return res.status(401).json({ error: 'Invalid token' })
+
+    const userEmail = userData.user.email
+
+    // Fetch purchases using service key (bypasses RLS)
+    const { data: purchases } = await dbQuery('purchases', {
+      'buyer_email': `eq.${userEmail}`,
+      'order': 'created_at.desc',
+      'limit': '50',
+    })
+
+    if (!purchases?.length) return res.json({ purchases: [] })
+
+    // Fetch product details for each purchase
+    const productIds = [...new Set(purchases.map(p => p.product_id))].filter(Boolean)
+    let prodMap = {}
+    if (productIds.length) {
+      const { data: prods } = await dbQuery('products', {
+        'id': `in.(${productIds.join(',')})`,
+        'select': 'id,title,type,status',
+      })
+      prods?.forEach(p => { prodMap[p.id] = p })
+    }
+
+    const enriched = purchases.map(p => ({
+      id: p.id,
+      product_id: p.product_id,
+      amount: p.amount,
+      created_at: p.created_at,
+      productTitle: prodMap[p.product_id]?.title ?? 'Unknown Product',
+      productType: prodMap[p.product_id]?.type ?? 'ebook',
+      productStatus: prodMap[p.product_id]?.status ?? 'published',
+    }))
+
+    return res.json({ purchases: enriched })
+  } catch (err) {
+    console.error('user/purchases error:', err)
+    return res.status(500).json({ error: 'Failed to fetch purchases' })
   }
 })
 
