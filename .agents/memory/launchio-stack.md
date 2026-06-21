@@ -23,6 +23,12 @@ Existing env vars use NEXT_PUBLIC_ prefix (set by previous work). Vite requires 
 **Why:** Env vars were set before the switch from Next.js to Vite.
 **How to apply:** When reading env in server.js, check NEXT_PUBLIC_ first. In vite.config.ts, always bridge both prefixes.
 
+## AI provider: Groq (not Gemini)
+The chat agent (`/api/agent`) uses Groq's API (`https://api.groq.com/openai/v1/chat/completions`) with model `llama-3.3-70b-versatile`. Switched from Gemini because free-tier quota was exhausted.
+
+**Why:** Groq is OpenAI-compatible (same message format), much faster, generous free tier.
+**How to apply:** Use `GROQ_API_KEY` env var. No fallback chain needed — single model, no 429 retries required. Gemini key (`GEMINI_API_KEY`) is still in secrets but no longer used by the agent.
+
 ## Supabase table schema
 The existing products table may have fewer columns than the app expects (missing: type, slug, creator_email, status, file_url). The `supabase-setup.sql` file adds these via ALTER TABLE IF NOT EXISTS. RLS blocks anon inserts so demo seeding must be done via SQL Editor.
 

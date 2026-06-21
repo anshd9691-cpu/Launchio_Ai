@@ -451,8 +451,8 @@ app.get('/api/schema-check', async (_req, res) => {
 // POST /api/agent — AI content agent
 app.post('/api/agent', async (req, res) => {
   const { messages = [], productType = 'ebook', currentContent = '' } = req.body
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) return res.status(503).json({ error: 'AI not configured' })
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) return res.status(503).json({ error: 'AI not configured — add GROQ_API_KEY to Secrets' })
 
   const contentRules = {
     ebook: `You are creating a complete, sellable EBOOK. When generating content:
@@ -495,100 +495,78 @@ RESPONSE RULES:
 ALWAYS return this exact JSON structure:
 {"reply":"your brief conversational response to the user (1-3 sentences, natural tone)","title":"Product title (max 80 chars)","description":"Compelling 2-3 sentence product description","content":"The full product content (all chapters/modules/sections)"}`
 
-  // Build Gemini contents from message history
-  const contents = messages.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
+  // Build OpenAI-compatible message history (Groq uses the same format)
+  const chatMessages = messages.map(m => ({
+    role: m.role,
+    content: m.content,
   }))
 
-  // Add context about current state if available
+  // Inject current content state into the last user message if available
   if (currentContent) {
-    const lastUserIdx = [...contents].reverse().findIndex(c => c.role === 'user')
+    const lastUserIdx = [...chatMessages].map(m => m.role).lastIndexOf('user')
     if (lastUserIdx !== -1) {
-      const idx = contents.length - 1 - lastUserIdx
-      contents[idx].parts[0].text = `[Current content state:\nTitle: ${req.body.currentTitle || ''}\n${currentContent.slice(0, 1000)}...]\n\n${contents[idx].parts[0].text}`
+      chatMessages[lastUserIdx] = {
+        role: 'user',
+        content: `[Current content state:\nTitle: ${req.body.currentTitle || ''}\n${currentContent.slice(0, 1000)}...]\n\n${chatMessages[lastUserIdx].content}`,
+      }
     }
   }
 
-  // Fallback model chain — tried in order, skips on 429 quota errors
-  const GEMINI_MODELS = [
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-2.5-flash-lite',
-    'gemini-flash-lite-latest',
-  ]
-
-  const geminiPayload = {
-    systemInstruction: { parts: [{ text: systemInstruction }] },
-    contents,
-    generationConfig: { temperature: 0.85, maxOutputTokens: 8192 },
-  }
-
-  let lastError = 'AI service error. Please try again.'
-
-  for (const model of GEMINI_MODELS) {
-    let gemRes, gemJson
-    try {
-      gemRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiPayload) }
-      )
-      gemJson = await gemRes.json()
-    } catch (err) {
-      lastError = 'Network error reaching AI. Please try again.'
-      continue
-    }
-
-    if (!gemRes.ok) {
-      const code = gemJson?.error?.code
-      const status = gemJson?.error?.status
-      console.warn(`Gemini ${model}: ${code} ${status}`)
-      // 429 quota exhausted — try next model
-      if (code === 429 || status === 'RESOURCE_EXHAUSTED') {
-        lastError = 'AI is busy — trying backup model…'
-        continue
-      }
-      // 404 model not found — try next model
-      if (code === 404 || status === 'NOT_FOUND') {
-        continue
-      }
-      // Other errors are terminal
-      lastError = gemJson?.error?.message || 'AI service error. Please try again.'
-      break
-    }
-
-    // Success — parse response
-    const rawText = gemJson?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-    const cleaned = rawText.replace(/```json\n?|```\n?/g, '').trim()
-
-    let parsed
-    try {
-      parsed = JSON.parse(cleaned)
-    } catch {
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        try { parsed = JSON.parse(jsonMatch[0]) } catch { /* fall through */ }
-      }
-    }
-
-    if (!parsed) {
-      return res.status(500).json({ error: 'AI returned unexpected format. Please try again.' })
-    }
-
-    return res.json({
-      reply: parsed.reply || "Here's your content! Let me know if you'd like any changes.",
-      title: parsed.title || '',
-      description: parsed.description || '',
-      content: parsed.content || '',
+  let groqRes, groqJson
+  try {
+    groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: systemInstruction },
+          ...chatMessages,
+        ],
+        temperature: 0.7,
+      }),
     })
+    groqJson = await groqRes.json()
+  } catch (err) {
+    console.error('Groq network error:', err)
+    return res.status(503).json({ error: 'Network error reaching AI. Please try again.' })
   }
 
-  // All models failed
-  console.error('All Gemini models exhausted. Last error:', lastError)
-  return res.status(503).json({
-    error: lastError.includes('busy') || lastError.includes('quota')
-      ? 'AI quota exhausted on all models. Please wait a few minutes and try again, or check your Gemini API plan.'
-      : lastError,
+  if (!groqRes.ok) {
+    const msg = groqJson?.error?.message || 'Groq API error'
+    console.error('Groq error:', groqJson?.error)
+    const status = groqRes.status
+    if (status === 429) {
+      return res.status(503).json({ error: 'AI is rate-limited. Please wait a moment and try again.' })
+    }
+    return res.status(503).json({ error: `AI service error: ${msg}` })
+  }
+
+  const rawText = groqJson?.choices?.[0]?.message?.content ?? ''
+  const cleaned = rawText.replace(/```json\n?|```\n?/g, '').trim()
+
+  let parsed
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      try { parsed = JSON.parse(jsonMatch[0]) } catch { /* fall through */ }
+    }
+  }
+
+  if (!parsed) {
+    return res.status(500).json({ error: 'AI returned unexpected format. Please try again.' })
+  }
+
+  return res.json({
+    reply: parsed.reply || "Here's your content! Let me know if you'd like any changes.",
+    title: parsed.title || '',
+    description: parsed.description || '',
+    content: parsed.content || '',
   })
 })
 
