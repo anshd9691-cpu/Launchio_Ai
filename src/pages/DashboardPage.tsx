@@ -264,7 +264,7 @@ export default function DashboardPage() {
                         {/* Actions */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {product.status === 'published' ? (
-                            /* Published: View, Copy link, Download */
+                            /* Published: View, Copy link */
                             <>
                               <Link to={`/p/${product.id}`} target="_blank" title="View public page"
                                 style={{ width: 34, height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8b5cf6' }}
@@ -278,12 +278,19 @@ export default function DashboardPage() {
                               </button>
                             </>
                           ) : (
-                            /* Draft: Continue editing only */
-                            <Link to="/create" title="Continue editing"
-                              style={{ padding: '0 14px', height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', gap: 5, color: '#8b5cf6', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
-                            >
-                              <Edit size={13} /> Continue Editing
-                            </Link>
+                            /* Draft: Continue editing + Preview */
+                            <>
+                              <Link to="/create" title="Continue editing"
+                                style={{ padding: '0 14px', height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', gap: 5, color: '#8b5cf6', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
+                              >
+                                <Edit size={13} /> Continue Editing
+                              </Link>
+                              <Link to={`/p/${product.id}`} target="_blank" title="Preview as buyer sees it"
+                                style={{ width: 34, height: 34, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8b5cf6' }}
+                              >
+                                <Eye size={15} />
+                              </Link>
+                            </>
                           )}
 
                           <button onClick={() => handleDelete(product.id)} disabled={deletingId === product.id} title="Delete"

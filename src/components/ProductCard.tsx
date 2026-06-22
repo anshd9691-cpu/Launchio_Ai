@@ -10,7 +10,7 @@ const TYPE_COLORS: Record<string, string> = {
   prompt_pack: 'linear-gradient(135deg, #6366f1, #06b6d4)',
 }
 
-export default function ProductCard({ product, index = 0 }: { product: Product; index?: number }) {
+export default function ProductCard({ product, index = 0, avgRating, reviewCount }: { product: Product; index?: number; avgRating?: number; reviewCount?: number }) {
   const badgeClass = `badge-${product.type}`
   const typeLabel = { ebook: 'Ebook', course: 'Course', template: 'Template', prompt_pack: 'Prompt Pack' }[product.type] ?? product.type
 
@@ -44,6 +44,15 @@ export default function ProductCard({ product, index = 0 }: { product: Product; 
         {product.creator_email && (
           <p style={{ fontSize: 12, color: '#8b5cf6', fontWeight: 600 }}>{product.creator_email.split('@')[0]}</p>
         )}
+
+        {/* Average rating */}
+        {avgRating !== undefined && reviewCount !== undefined && reviewCount > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ fontSize: 13, color: '#f59e0b' }}>{'★'.repeat(Math.round(avgRating))}{'☆'.repeat(5 - Math.round(avgRating))}</span>
+            <span style={{ fontSize: 11, color: '#4c4879', fontWeight: 600 }}>{avgRating.toFixed(1)} ({reviewCount})</span>
+          </div>
+        )}
+
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, borderTop: '1px solid rgba(139,92,246,0.1)', marginTop: 'auto' }}>
           <span style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 900, fontSize: 22, color: '#1e1b4b' }}>${product.price}</span>
           <motion.div whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.95 }}>

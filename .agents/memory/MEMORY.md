@@ -1,1 +1,3 @@
 - [Launchio stack decisions](launchio-stack.md) — Vite+React (not Next.js — blocked by security policy), Express on 3001, Supabase via REST not SDK (avoids ws issue on Node 20)
+- [Launchio admin route](launchio-admin.md) — Admin at /control-x7k9; requires ADMIN_EMAIL env var; requireAdmin middleware verifies JWT email against ADMIN_EMAIL
+- [Launchio agent endpoint](launchio-agent.md) — Filter leading assistant greeting before Groq; inject currentContent+attachments into enhancedSystem (not user messages) to avoid diluting user intent

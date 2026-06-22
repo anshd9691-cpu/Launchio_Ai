@@ -450,7 +450,7 @@ app.get('/api/schema-check', async (_req, res) => {
 
 // POST /api/agent — AI content agent
 app.post('/api/agent', async (req, res) => {
-  const { messages = [], productType = 'ebook', currentContent = '' } = req.body
+  const { messages = [], productType = 'ebook', currentContent = '', currentTitle = '', attachments = [] } = req.body
   const apiKey = process.env.GROQ_API_KEY
   if (!apiKey) return res.status(503).json({ error: 'AI not configured — add GROQ_API_KEY to Secrets' })
 
@@ -495,21 +495,23 @@ RESPONSE RULES:
 ALWAYS return this exact JSON structure:
 {"reply":"your brief conversational response to the user (1-3 sentences, natural tone)","title":"Product title (max 80 chars)","description":"Compelling 2-3 sentence product description","content":"The full product content (all chapters/modules/sections)"}`
 
-  // Build OpenAI-compatible message history (Groq uses the same format)
-  const chatMessages = messages.map(m => ({
-    role: m.role,
-    content: m.content,
-  }))
+  // Build message history — ensure it starts with a user message (skip any leading assistant greeting)
+  const chatMessages = messages
+    .filter((m, i) => !(i === 0 && m.role === 'assistant'))
+    .map(m => ({ role: m.role, content: m.content }))
 
-  // Inject current content state into the last user message if available
+  // Append context (current content + attachments) to the system instruction
+  // instead of modifying user messages, which can dilute the user's actual request
+  let enhancedSystem = systemInstruction
   if (currentContent) {
-    const lastUserIdx = [...chatMessages].map(m => m.role).lastIndexOf('user')
-    if (lastUserIdx !== -1) {
-      chatMessages[lastUserIdx] = {
-        role: 'user',
-        content: `[Current content state:\nTitle: ${req.body.currentTitle || ''}\n${currentContent.slice(0, 1000)}...]\n\n${chatMessages[lastUserIdx].content}`,
-      }
-    }
+    enhancedSystem += `\n\nCURRENT CONTENT STATE (the user is refining this — keep existing structure unless told otherwise):\nTitle: ${currentTitle}\n---\n${currentContent.slice(0, 1000)}`
+  }
+  if (attachments?.length) {
+    const refText = attachments
+      .filter(a => a.content)
+      .map(a => `=== ${a.name} ===\n${a.content.slice(0, 1000)}`)
+      .join('\n\n')
+    if (refText) enhancedSystem += `\n\nREFERENCE FILES PROVIDED BY CREATOR (use these as inspiration/context):\n${refText}`
   }
 
   let groqRes, groqJson
@@ -523,7 +525,7 @@ ALWAYS return this exact JSON structure:
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         messages: [
-          { role: 'system', content: systemInstruction },
+          { role: 'system', content: enhancedSystem },
           ...chatMessages,
         ],
         temperature: 0.7,
@@ -814,6 +816,119 @@ app.get('/api/download/:productId', async (req, res) => {
     return res.status(500).json({ error: 'Download failed' })
   }
 })
+
+// ─── Admin middleware ──────────────────────────────────────────────────────────
+
+async function requireAdmin(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.status(401).json({ error: 'Unauthorized' })
+  const userData = await verifySupabaseJWT(token)
+  const adminEmail = process.env.ADMIN_EMAIL
+  if (!adminEmail) return res.status(503).json({ error: 'ADMIN_EMAIL not set in environment' })
+  if (!userData?.user || userData.user.email !== adminEmail) {
+    return res.status(403).json({ error: 'Forbidden — admin only' })
+  }
+  req.adminUser = userData.user
+  next()
+}
+
+// ─── Admin Routes ──────────────────────────────────────────────────────────────
+
+// GET /api/admin/stats
+app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
+  try {
+    const [prodsRes, purchasesRes] = await Promise.all([
+      fetch(`${SUPABASE_URL}/rest/v1/products?select=id,status,creator_email&limit=1000`, {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+      }),
+      fetch(`${SUPABASE_URL}/rest/v1/purchases?select=amount,creator_payout&limit=1000`, {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+      }),
+    ])
+    const prods = prodsRes.ok ? await prodsRes.json() : []
+    const purchases = purchasesRes.ok ? await purchasesRes.json() : []
+    const uniqueCreators = new Set((prods).map(p => p.creator_email).filter(Boolean))
+    return res.json({
+      totalProducts: prods.length,
+      publishedProducts: prods.filter(p => p.status === 'published').length,
+      totalUsers: uniqueCreators.size,
+      totalRevenue: purchases.reduce((s, p) => s + (p.amount ?? 0), 0),
+      totalSales: purchases.length,
+    })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/admin/products
+app.get('/api/admin/products', requireAdmin, async (_req, res) => {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/products?select=id,title,type,status,price,creator_email,created_at&order=created_at.desc&limit=200`, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+    })
+    const data = r.ok ? await r.json() : []
+    return res.json({ products: data })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/admin/transactions
+app.get('/api/admin/transactions', requireAdmin, async (_req, res) => {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/purchases?select=id,product_id,buyer_email,amount,creator_payout,platform_fee,created_at&order=created_at.desc&limit=200`, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+    })
+    const purchases = r.ok ? await r.json() : []
+
+    // Enrich with product titles
+    const productIds = [...new Set(purchases.map(p => p.product_id))].filter(Boolean)
+    let prodMap = {}
+    if (productIds.length) {
+      const pr = await fetch(`${SUPABASE_URL}/rest/v1/products?id=in.(${productIds.join(',')})&select=id,title`, {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+      })
+      if (pr.ok) { const prods = await pr.json(); prods.forEach(p => { prodMap[p.id] = p.title }) }
+    }
+    const enriched = purchases.map(p => ({ ...p, productTitle: prodMap[p.product_id] ?? 'Unknown' }))
+    return res.json({ transactions: enriched })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/admin/products/:id/unpublish
+app.post('/api/admin/products/:id/unpublish', requireAdmin, async (req, res) => {
+  const { id } = req.params
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/products?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+      body: JSON.stringify({ status: 'draft' }),
+    })
+    if (!r.ok) return res.status(500).json({ error: 'Unpublish failed' })
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/admin/products/:id
+app.delete('/api/admin/products/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/products?id=eq.${id}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+    })
+    if (!r.ok) return res.status(500).json({ error: 'Delete failed' })
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const PORT = 3001
 app.listen(PORT, async () => {

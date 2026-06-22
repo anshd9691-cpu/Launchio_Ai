@@ -16,11 +16,14 @@ const FILTERS = [
   { id: 'prompt_pack', label: 'Prompt Pack' },
 ]
 
+interface RatingMap { [productId: string]: { avg: number; count: number } }
+
 export default function ExplorePage() {
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
+  const [ratings, setRatings] = useState<RatingMap>({})
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
@@ -28,8 +31,32 @@ export default function ExplorePage() {
     if (filter !== 'all') query = query.eq('type', filter)
     if (search.trim()) query = query.ilike('title', `%${search.trim()}%`)
     const { data } = await query
-    setProducts(data ?? [])
+    const prods = data ?? []
+    setProducts(prods)
     setLoading(false)
+
+    // Fetch ratings for visible products (graceful — reviews table may not exist yet)
+    if (prods.length) {
+      try {
+        const ids = prods.map(p => p.id)
+        const { data: revData } = await supabase
+          .from('reviews')
+          .select('product_id, rating')
+          .in('product_id', ids)
+        if (revData) {
+          const map: RatingMap = {}
+          for (const row of revData) {
+            if (!map[row.product_id]) map[row.product_id] = { avg: 0, count: 0 }
+            map[row.product_id].avg += row.rating
+            map[row.product_id].count += 1
+          }
+          for (const id of Object.keys(map)) {
+            map[id].avg = map[id].avg / map[id].count
+          }
+          setRatings(map)
+        }
+      } catch { /* reviews table may not exist yet */ }
+    }
   }, [filter, search])
 
   useEffect(() => {
@@ -102,7 +129,15 @@ export default function ExplorePage() {
           </motion.div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 22 }}>
-            {products.map((product, i) => <ProductCard key={product.id} product={product} index={i} />)}
+            {products.map((product, i) => (
+              <ProductCard
+                key={product.id}
+                product={product}
+                index={i}
+                avgRating={ratings[product.id]?.avg}
+                reviewCount={ratings[product.id]?.count}
+              />
+            ))}
           </div>
         )}
       </div>

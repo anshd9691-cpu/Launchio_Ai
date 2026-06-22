@@ -147,6 +147,42 @@ VALUES
 
 ON CONFLICT (slug) DO NOTHING;
 
+-- ── 6. Reviews table ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.reviews (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id    uuid        REFERENCES public.products(id) ON DELETE CASCADE,
+  reviewer_id   uuid        REFERENCES auth.users(id) ON DELETE SET NULL,
+  reviewer_email text       DEFAULT '',
+  rating        integer     NOT NULL CHECK (rating >= 1 AND rating <= 5),
+  review_text   text        DEFAULT '',
+  created_at    timestamptz DEFAULT now()
+);
+
+ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
+
+-- Prevent duplicate reviews per buyer per product
+DO $$ BEGIN
+  ALTER TABLE public.reviews ADD CONSTRAINT reviews_unique_buyer
+    UNIQUE (product_id, reviewer_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DROP POLICY IF EXISTS "Anyone can read reviews"          ON public.reviews;
+DROP POLICY IF EXISTS "Authenticated users can review"   ON public.reviews;
+DROP POLICY IF EXISTS "Reviewers can delete own reviews" ON public.reviews;
+
+-- Anyone can read reviews (public)
+CREATE POLICY "Anyone can read reviews"
+  ON public.reviews FOR SELECT USING (true);
+
+-- Any authenticated user can insert a review (UI enforces purchase check)
+CREATE POLICY "Authenticated users can review"
+  ON public.reviews FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = reviewer_id);
+
+-- Reviewers can delete their own reviews
+CREATE POLICY "Reviewers can delete own reviews"
+  ON public.reviews FOR DELETE USING (auth.uid() = reviewer_id);
+
 -- ── Done! ─────────────────────────────────────────────────────
 SELECT 'Setup complete! Products in table: ' || count(*)::text AS result
 FROM public.products;
