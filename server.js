@@ -124,6 +124,61 @@ function buildConfirmationEmail(confirmationUrl) {
 </body></html>`
 }
 
+function buildSaleNotificationEmail({ creatorName, productTitle, saleAmount, creatorPayout, buyerEmail, currency, dashboardUrl }) {
+  const currencySymbol = currency === 'EUR' ? '€' : '$'
+  const maskedBuyer = (() => {
+    const [local, domain] = (buyerEmail || '').split('@')
+    if (!domain) return '****'
+    return `${local.slice(0, 2)}****@${domain}`
+  })()
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><title>New Sale on Launchio</title></head>
+<body style="margin:0;padding:0;background:#f5f3ff;font-family:'Helvetica Neue',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f3ff;padding:40px 16px;"><tr><td align="center">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width:540px;background:#fff;border-radius:24px;overflow:hidden;box-shadow:0 8px 40px rgba(139,92,246,.14);">
+      <tr><td style="background:linear-gradient(135deg,#6366f1,#8b5cf6,#a855f7);padding:36px 40px 32px;text-align:center;">
+        <div style="font-size:36px;margin-bottom:8px;">🎉</div>
+        <span style="font-size:22px;font-weight:800;color:#fff;">You made a sale!</span>
+      </td></tr>
+      <tr><td style="padding:40px 40px 32px;">
+        <p style="margin:0 0 8px;font-size:14px;color:#8b5cf6;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">New sale on Launchio</p>
+        <h1 style="margin:0 0 24px;font-size:22px;font-weight:800;color:#1e1b4b;">${productTitle}</h1>
+
+        <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f3ff;border-radius:16px;overflow:hidden;margin-bottom:28px;">
+          <tr>
+            <td style="padding:16px 20px;border-bottom:1px solid rgba(139,92,246,.1);">
+              <span style="font-size:13px;color:#4c4879;font-weight:600;">Sale price</span>
+              <span style="float:right;font-size:15px;font-weight:700;color:#1e1b4b;">${currencySymbol}${saleAmount.toFixed(2)}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 20px;border-bottom:1px solid rgba(139,92,246,.1);">
+              <span style="font-size:13px;color:#4c4879;font-weight:600;">Platform fee (30%)</span>
+              <span style="float:right;font-size:15px;font-weight:700;color:#a5a3c0;">-${currencySymbol}${(saleAmount * 0.3).toFixed(2)}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 20px;background:#fff;">
+              <span style="font-size:14px;color:#059669;font-weight:800;">Your payout (70%)</span>
+              <span style="float:right;font-size:22px;font-weight:900;color:#059669;">${currencySymbol}${creatorPayout.toFixed(2)}</span>
+            </td>
+          </tr>
+        </table>
+
+        <p style="margin:0 0 28px;font-size:13px;color:#4c4879;">Sold to: <strong style="color:#1e1b4b;">${maskedBuyer}</strong> &nbsp;·&nbsp; The file was delivered to them instantly.</p>
+
+        <div style="text-align:center;margin-bottom:24px;">
+          <a href="${dashboardUrl}" style="display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:15px;font-weight:700;text-decoration:none;border-radius:14px;">View Dashboard &rarr;</a>
+        </div>
+        <p style="margin:0;font-size:12px;color:#a5a3c0;text-align:center;">Payouts are processed to your saved payout details within 2–5 business days.</p>
+      </td></tr>
+      <tr><td style="padding:20px 40px;background:#f5f3ff;text-align:center;">
+        <p style="margin:0;font-size:12px;color:#a5a3c0;">🚀 <strong>Launchio</strong> — AI-powered digital product marketplace</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`
+}
+
 // ─── PDF Generation ───────────────────────────────────────────────────────────
 
 function wrapText(text, font, fontSize, maxWidth) {
@@ -741,13 +796,54 @@ app.post('/api/webhooks/lemonsqueezy', async (req, res) => {
     const buyerEmail = body?.data?.attributes?.user_email
     const amount = (body?.data?.attributes?.total ?? 0) / 100
     if (productId && buyerEmail && amount) {
+      const creatorPayout = parseFloat((amount * 0.7).toFixed(2))
       await dbInsert('purchases', {
         product_id: productId,
         buyer_email: buyerEmail,
         amount,
-        creator_payout: parseFloat((amount * 0.7).toFixed(2)),
+        creator_payout: creatorPayout,
         platform_fee: parseFloat((amount * 0.3).toFixed(2)),
       })
+
+      // Send sale notification email to creator
+      if (resend) {
+        try {
+          const { data: products } = await dbQuery('products', {
+            filter: `id=eq.${productId}`,
+            select: 'title,creator_email,creator_id',
+          })
+          const product = products?.[0]
+          if (product?.creator_email) {
+            // Look up creator's preferred payout currency
+            let currency = 'USD'
+            try {
+              const payoutRows = await fetch(
+                `${SUPABASE_URL}/rest/v1/creator_payouts?creator_id=eq.${product.creator_id}&select=currency`,
+                { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+              ).then(r => r.json())
+              if (payoutRows?.[0]?.currency) currency = payoutRows[0].currency
+            } catch { /* use USD default */ }
+
+            const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VITE_PUBLIC_BASE_URL || 'https://launchio.replit.app'
+            await resend.emails.send({
+              from: 'Launchio <onboarding@resend.dev>',
+              to: product.creator_email,
+              subject: `🎉 New sale! ${product.title} — ${currency === 'EUR' ? '€' : '$'}${creatorPayout.toFixed(2)} earned`,
+              html: buildSaleNotificationEmail({
+                creatorName: product.creator_email.split('@')[0],
+                productTitle: product.title,
+                saleAmount: amount,
+                creatorPayout,
+                buyerEmail,
+                currency,
+                dashboardUrl: `${baseUrl}/dashboard`,
+              }),
+            })
+          }
+        } catch (emailErr) {
+          console.error('Sale notification email failed:', emailErr?.message)
+        }
+      }
     }
   }
   return res.status(200).json({ received: true })
