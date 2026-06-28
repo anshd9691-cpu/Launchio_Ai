@@ -101,7 +101,7 @@ async function verifySupabaseJWT(token) {
 
 // ─── Resend ───────────────────────────────────────────────────────────────────
 
-const resend = new Resend(process.env.RESEND_API_KEY)
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null
 
 function buildConfirmationEmail(confirmationUrl) {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><title>Confirm your Launchio account</title></head>
@@ -399,7 +399,7 @@ async function generatePPTX({ title, description, content }) {
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 
-const resendClient = new Resend(process.env.RESEND_API_KEY)
+const resendClient = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null
 
 app.post('/api/send-confirmation', async (req, res) => {
   const { email } = req.body
@@ -487,15 +487,24 @@ app.post('/api/agent', async (req, res) => {
 RESPONSE RULES:
 - Return ONLY valid JSON, no markdown blocks, no extra text
 - When the user describes their topic/idea, generate a complete first draft immediately
-- When refining, only modify what was asked — don't restart from scratch
+- When refining, ALWAYS return the FULL updated content (all chapters/modules/sections) — never truncate
+- Only modify what was asked — don't restart from scratch unless requested
 - Keep a warm, human, non-robotic tone throughout
-- If a request is too vague to act on well, ask ONE focused clarifying question
+- If a request is too vague, ask ONE focused clarifying question
 - Never refuse a legitimate creative request regardless of niche
 
-ALWAYS return this exact JSON structure:
-{"reply":"your brief conversational response to the user (1-3 sentences, natural tone)","title":"Product title (max 80 chars)","description":"Compelling 2-3 sentence product description","content":"The full product content (all chapters/modules/sections)"}`
+STYLING REQUESTS: If the user asks for visual style changes (dark mode, fonts, layout, colors), include a "settings" key with ONLY the changed values. Supported keys:
+- theme: "light" | "dark" | "purple" | "sepia"
+- fontFamily: font name string (e.g. "Georgia, serif")
+- fontSize: number 10–24
+- layout: "document" | "magazine" | "minimal" | "bold"
+Example: if user says "make it dark mode" → include {"settings":{"theme":"dark"}}
 
-  // Build message history — ensure it starts with a user message (skip any leading assistant greeting)
+ALWAYS return this exact JSON structure (settings is optional, omit if no style change):
+{"reply":"your brief conversational response (1-3 sentences, natural tone)","title":"Product title (max 80 chars)","description":"Compelling 2-3 sentence product description","content":"The full product content (all chapters/modules/sections)","settings":{}}`
+
+  // Build full conversation history — pass ALL messages to Groq so it has complete context
+  // Only skip the very first message if it's an assistant UI greeting (not real conversation)
   const chatMessages = messages
     .filter((m, i) => !(i === 0 && m.role === 'assistant'))
     .map(m => ({ role: m.role, content: m.content }))
@@ -564,11 +573,16 @@ ALWAYS return this exact JSON structure:
     return res.status(500).json({ error: 'AI returned unexpected format. Please try again.' })
   }
 
+  const settingsOut = parsed.settings && typeof parsed.settings === 'object' && Object.keys(parsed.settings).length > 0
+    ? parsed.settings
+    : undefined
+
   return res.json({
     reply: parsed.reply || "Here's your content! Let me know if you'd like any changes.",
     title: parsed.title || '',
     description: parsed.description || '',
     content: parsed.content || '',
+    ...(settingsOut ? { settings: settingsOut } : {}),
   })
 })
 

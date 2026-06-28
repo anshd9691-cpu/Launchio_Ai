@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Sparkles, BookOpen, GraduationCap, Layout, Zap, CheckCircle,
   ArrowRight, ArrowLeft, DollarSign, Send, Rocket, RefreshCw,
-  Paperclip, X, FileText, Image,
+  Paperclip, X, FileText, Image, Type, Palette, LayoutTemplate, Music,
 } from 'lucide-react'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabase'
@@ -52,6 +52,51 @@ const TEMPLATES: Record<ProductType, { title: string; idea: string }[]> = {
 
 const PRICE_SUGGESTIONS = [9, 19, 29, 49, 79, 97, 147, 197]
 
+interface PreviewSettings {
+  fontFamily: string
+  fontSize: number
+  theme: 'light' | 'dark' | 'purple' | 'sepia' | 'custom'
+  bgColor: string
+  textColor: string
+  headingColor: string
+  accentColor: string
+  layout: 'document' | 'magazine' | 'minimal' | 'bold'
+}
+
+const THEME_PRESETS: Record<string, Partial<PreviewSettings>> = {
+  light:  { theme: 'light',  bgColor: '#ffffff', textColor: '#1e1b4b', headingColor: '#1e1b4b', accentColor: '#8b5cf6' },
+  dark:   { theme: 'dark',   bgColor: '#0f0f17', textColor: '#c4b5fd', headingColor: '#e8e6f8', accentColor: '#a78bfa' },
+  purple: { theme: 'purple', bgColor: '#f5f3ff', textColor: '#4c4879', headingColor: '#1e1b4b', accentColor: '#8b5cf6' },
+  sepia:  { theme: 'sepia',  bgColor: '#fdf6e3', textColor: '#5c4a2a', headingColor: '#3d2f1a', accentColor: '#c77d3a' },
+}
+
+const FONT_OPTIONS = [
+  { label: 'Georgia (Serif)',    value: 'Georgia, serif' },
+  { label: 'Inter (Modern)',     value: 'Inter, system-ui, sans-serif' },
+  { label: 'Merriweather',       value: '"Merriweather", Georgia, serif' },
+  { label: 'Playfair Display',   value: '"Playfair Display", Georgia, serif' },
+  { label: 'Open Sans',          value: '"Open Sans", system-ui, sans-serif' },
+  { label: 'Courier New (Mono)', value: '"Courier New", Courier, monospace' },
+]
+
+const LAYOUT_OPTIONS = [
+  { id: 'document', label: 'Document', icon: '📄' },
+  { id: 'magazine', label: 'Magazine', icon: '📰' },
+  { id: 'minimal',  label: 'Minimal',  icon: '⬜' },
+  { id: 'bold',     label: 'Bold',     icon: '🔲' },
+]
+
+const DEFAULT_SETTINGS: PreviewSettings = {
+  fontFamily: 'Georgia, serif',
+  fontSize: 14,
+  theme: 'light',
+  bgColor: '#ffffff',
+  textColor: '#1e1b4b',
+  headingColor: '#1e1b4b',
+  accentColor: '#8b5cf6',
+  layout: 'document',
+}
+
 const LOADING_STATUSES = [
   'Reading your request…',
   'Building the outline…',
@@ -91,6 +136,16 @@ export default function CreatePage() {
   const [aiDescription, setAiDescription] = useState('')
   const [aiContent, setAiContent] = useState('')
   const [hasContent, setHasContent] = useState(false)
+
+  // Preview editor
+  const [previewSettings, setPreviewSettings] = useState<PreviewSettings>(DEFAULT_SETTINGS)
+  const [activeToolTab, setActiveToolTab] = useState<'font' | 'colors' | 'layout' | 'media' | null>(null)
+  const [previewImages, setPreviewImages] = useState<string[]>([])
+  const [previewVideos, setPreviewVideos] = useState<string[]>([])
+  const [previewAudio, setPreviewAudio] = useState<string>('')
+  const [imageUrlInput, setImageUrlInput] = useState('')
+  const [videoUrlInput, setVideoUrlInput] = useState('')
+  const audioFileRef = useRef<HTMLInputElement>(null)
 
   // Publish step
   const [price, setPrice] = useState(29)
@@ -212,6 +267,13 @@ export default function CreatePage() {
       if (json.title) setAiTitle(json.title)
       if (json.description) setAiDescription(json.description)
       if (json.content) { setAiContent(json.content); setHasContent(true) }
+      if (json.settings && typeof json.settings === 'object' && Object.keys(json.settings).length > 0) {
+        setPreviewSettings(prev => {
+          const themeKey = json.settings.theme
+          const themeBase = themeKey && THEME_PRESETS[themeKey] ? THEME_PRESETS[themeKey] : {}
+          return { ...prev, ...themeBase, ...json.settings }
+        })
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Something went wrong'
       setChatError(msg)
@@ -227,11 +289,104 @@ export default function CreatePage() {
     const text = (userText ?? inputValue).trim()
     if (!text) return
     setInputValue('')
+    applySettingsFromChat(text)
     sendMessageWith(messagesRef.current, text)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+  }
+
+  const updateSettings = (updates: Partial<PreviewSettings>) => {
+    setPreviewSettings(prev => ({ ...prev, ...updates }))
+  }
+
+  const applySettingsFromChat = (text: string) => {
+    const t = text.toLowerCase()
+    const u: Partial<PreviewSettings> = {}
+    if (t.includes('dark mode') || t.includes('dark theme') || t.includes('dark background'))
+      Object.assign(u, THEME_PRESETS.dark)
+    else if (t.includes('light mode') || t.includes('light theme') || t.includes('white background'))
+      Object.assign(u, THEME_PRESETS.light)
+    else if (t.includes('purple theme') || t.includes('purple background'))
+      Object.assign(u, THEME_PRESETS.purple)
+    else if (t.includes('sepia') || t.includes('warm background'))
+      Object.assign(u, THEME_PRESETS.sepia)
+    if (t.includes('bigger font') || t.includes('larger font') || t.includes('increase font') || t.includes('larger text'))
+      u.fontSize = Math.min(24, (previewSettings.fontSize + 2))
+    if (t.includes('smaller font') || t.includes('decrease font') || t.includes('smaller text'))
+      u.fontSize = Math.max(10, (previewSettings.fontSize - 2))
+    if (t.includes('serif font') && !t.includes('sans')) u.fontFamily = 'Georgia, serif'
+    if (t.includes('sans-serif') || t.includes('sans serif') || t.includes('modern font')) u.fontFamily = 'Inter, system-ui, sans-serif'
+    if (t.includes('monospace') || t.includes('mono font') || t.includes('courier')) u.fontFamily = '"Courier New", Courier, monospace'
+    if (t.includes('playfair')) u.fontFamily = '"Playfair Display", Georgia, serif'
+    if (t.includes('magazine layout') || t.includes('magazine style')) u.layout = 'magazine'
+    if (t.includes('minimal layout') || t.includes('minimal style') || t.includes('minimalist')) u.layout = 'minimal'
+    if (t.includes('bold layout') || t.includes('bold style')) u.layout = 'bold'
+    if (t.includes('document layout') || t.includes('document style') || t.includes('standard layout')) u.layout = 'document'
+    if (Object.keys(u).length > 0) setPreviewSettings(prev => ({ ...prev, ...u }))
+  }
+
+  const getYouTubeEmbedUrl = (url: string): string | null => {
+    const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
+    return m ? `https://www.youtube.com/embed/${m[1]}` : null
+  }
+
+  const addImage = () => {
+    if (imageUrlInput.trim()) { setPreviewImages(prev => [...prev, imageUrlInput.trim()]); setImageUrlInput('') }
+  }
+
+  const addVideo = () => {
+    if (videoUrlInput.trim()) { setPreviewVideos(prev => [...prev, videoUrlInput.trim()]); setVideoUrlInput('') }
+  }
+
+  const renderContentLines = (content: string) => {
+    const s = previewSettings
+    const isBold = s.layout === 'bold'
+    const isMagazine = s.layout === 'magazine'
+    const lines = content.split('\n')
+    const elements: React.ReactNode[] = []
+    let i = 0
+    for (const line of lines) {
+      if (line.startsWith('# ')) {
+        elements.push(
+          <h1 key={i} style={{ fontFamily: s.fontFamily, fontSize: isBold ? s.fontSize * 2.4 : isMagazine ? s.fontSize * 2 : s.fontSize * 1.8, color: s.headingColor, fontWeight: 800, lineHeight: 1.2, margin: '24px 0 12px', borderBottom: isMagazine ? `3px solid ${s.accentColor}` : 'none', paddingBottom: isMagazine ? 8 : 0 }}>
+            {line.slice(2)}
+          </h1>
+        )
+      } else if (line.startsWith('## ')) {
+        elements.push(
+          <h2 key={i} style={{ fontFamily: s.fontFamily, fontSize: isBold ? s.fontSize * 1.7 : s.fontSize * 1.4, color: s.headingColor, fontWeight: 700, lineHeight: 1.3, margin: '20px 0 8px' }}>
+            {line.slice(3)}
+          </h2>
+        )
+      } else if (line.startsWith('### ')) {
+        elements.push(
+          <h3 key={i} style={{ fontFamily: s.fontFamily, fontSize: isBold ? s.fontSize * 1.3 : s.fontSize * 1.15, color: s.headingColor, fontWeight: 700, lineHeight: 1.4, margin: '16px 0 6px' }}>
+            {line.slice(4)}
+          </h3>
+        )
+      } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        elements.push(
+          <div key={i} style={{ display: 'flex', gap: 8, margin: '3px 0', paddingLeft: 8 }}>
+            <span style={{ color: s.accentColor, fontWeight: 700, flexShrink: 0 }}>•</span>
+            <p style={{ fontFamily: s.fontFamily, fontSize: s.fontSize, color: s.textColor, lineHeight: 1.75, margin: 0 }}>{line.slice(2)}</p>
+          </div>
+        )
+      } else if (line.startsWith('**') && line.endsWith('**') && line.length > 4) {
+        elements.push(
+          <p key={i} style={{ fontFamily: s.fontFamily, fontSize: s.fontSize, color: s.headingColor, fontWeight: 700, lineHeight: 1.75, margin: '4px 0' }}>{line.slice(2, -2)}</p>
+        )
+      } else if (line === '') {
+        elements.push(<div key={i} style={{ height: 10 }} />)
+      } else {
+        elements.push(
+          <p key={i} style={{ fontFamily: s.fontFamily, fontSize: s.fontSize, color: s.textColor, lineHeight: s.layout === 'minimal' ? 2 : 1.75, margin: '3px 0' }}>{line}</p>
+        )
+      }
+      i++
+    }
+    return elements
   }
 
   const handlePublish = async () => {
@@ -556,53 +711,273 @@ export default function CreatePage() {
 
               {/* Right — Live Preview */}
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
-                <div style={{ padding: '16px 24px', borderBottom: '1px solid rgba(139,92,246,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+
+                {/* Header */}
+                <div style={{ padding: '12px 20px', borderBottom: '1px solid rgba(139,92,246,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
                   <div>
                     <p style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 14, color: '#1e1b4b' }}>Live Preview</p>
-                    <p style={{ fontSize: 11, color: '#4c4879' }}>Updates after each AI response</p>
+                    <p style={{ fontSize: 11, color: '#a5a3c0' }}>Type "dark mode", "bigger font", "magazine layout" in chat to style</p>
                   </div>
                   {hasContent && (
-                    <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
-                      onClick={() => setStep(3)}
-                      className="btn-gradient"
-                      style={{ padding: '8px 18px', borderRadius: 12, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
-                    >
+                    <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={() => setStep(3)} className="btn-gradient"
+                      style={{ padding: '8px 18px', borderRadius: 12, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
                       <CheckCircle size={14} /> Use this version
                     </motion.button>
                   )}
                 </div>
 
-                <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+                {/* Editor Toolbar */}
+                <div style={{ padding: '8px 16px', borderBottom: '1px solid rgba(139,92,246,0.08)', display: 'flex', alignItems: 'center', gap: 6, background: '#fafaf9', flexShrink: 0, flexWrap: 'wrap' }}>
+                  {([
+                    { id: 'font',   icon: <Type size={13} />,           label: 'Font'   },
+                    { id: 'colors', icon: <Palette size={13} />,        label: 'Colors' },
+                    { id: 'layout', icon: <LayoutTemplate size={13} />, label: 'Layout' },
+                    { id: 'media',  icon: <Music size={13} />,          label: 'Media'  },
+                  ] as const).map(tab => (
+                    <button key={tab.id}
+                      onClick={() => setActiveToolTab(prev => prev === tab.id ? null : tab.id)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 11px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s', border: 'none',
+                        background: activeToolTab === tab.id ? '#8b5cf6' : '#fff',
+                        color: activeToolTab === tab.id ? '#fff' : '#4c4879',
+                        boxShadow: activeToolTab === tab.id ? 'none' : '0 0 0 1.5px rgba(139,92,246,0.2)',
+                      }}
+                    >{tab.icon}{tab.label}</button>
+                  ))}
+                  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ fontSize: 11, color: '#a5a3c0', fontWeight: 600, marginRight: 2 }}>Aa</span>
+                    <button onClick={() => updateSettings({ fontSize: Math.max(10, previewSettings.fontSize - 1) })}
+                      style={{ width: 26, height: 26, borderRadius: 6, border: '1.5px solid rgba(139,92,246,0.2)', background: '#fff', cursor: 'pointer', color: '#4c4879', fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                    <span style={{ fontSize: 12, color: '#1e1b4b', fontWeight: 700, minWidth: 22, textAlign: 'center' }}>{previewSettings.fontSize}</span>
+                    <button onClick={() => updateSettings({ fontSize: Math.min(24, previewSettings.fontSize + 1) })}
+                      style={{ width: 26, height: 26, borderRadius: 6, border: '1.5px solid rgba(139,92,246,0.2)', background: '#fff', cursor: 'pointer', color: '#4c4879', fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                  </div>
+                </div>
+
+                {/* Controls Panel */}
+                <AnimatePresence>
+                  {activeToolTab && (
+                    <motion.div key={activeToolTab}
+                      initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.18 }}
+                      style={{ overflow: 'hidden', borderBottom: '1px solid rgba(139,92,246,0.1)', background: '#fafaf9', flexShrink: 0 }}
+                    >
+                      <div style={{ padding: '12px 16px' }}>
+
+                        {/* Font tab */}
+                        {activeToolTab === 'font' && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {FONT_OPTIONS.map(f => (
+                              <button key={f.value} onClick={() => updateSettings({ fontFamily: f.value })}
+                                style={{ padding: '6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer', fontFamily: f.value, fontWeight: 600, border: 'none', transition: 'all 0.15s',
+                                  background: previewSettings.fontFamily === f.value ? '#8b5cf6' : '#fff',
+                                  color: previewSettings.fontFamily === f.value ? '#fff' : '#4c4879',
+                                  boxShadow: previewSettings.fontFamily === f.value ? 'none' : '0 0 0 1.5px rgba(139,92,246,0.2)',
+                                }}
+                              >{f.label}</button>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Colors tab */}
+                        {activeToolTab === 'colors' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {(Object.entries(THEME_PRESETS) as [string, Partial<PreviewSettings>][]).map(([key, preset]) => (
+                                <button key={key} onClick={() => updateSettings({ ...preset, theme: key as PreviewSettings['theme'] })}
+                                  style={{ padding: '7px 14px', borderRadius: 10, fontSize: 12, cursor: 'pointer', fontWeight: 700, transition: 'all 0.15s',
+                                    background: preset.bgColor, color: preset.textColor,
+                                    outline: previewSettings.theme === key ? `2px solid ${preset.accentColor}` : '2px solid transparent',
+                                    outlineOffset: 2,
+                                  }}
+                                >{key.charAt(0).toUpperCase() + key.slice(1)}</button>
+                              ))}
+                            </div>
+                            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                              {([
+                                { label: 'Background', key: 'bgColor' as const },
+                                { label: 'Text',       key: 'textColor' as const },
+                                { label: 'Headings',   key: 'headingColor' as const },
+                                { label: 'Accent',     key: 'accentColor' as const },
+                              ]).map(c => (
+                                <label key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: '#4c4879', cursor: 'pointer' }}>
+                                  <input type="color" value={previewSettings[c.key]} onChange={e => updateSettings({ [c.key]: e.target.value, theme: 'custom' })}
+                                    style={{ width: 30, height: 22, borderRadius: 5, border: '1px solid rgba(139,92,246,0.2)', cursor: 'pointer', padding: 0 }} />
+                                  {c.label}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Layout tab */}
+                        {activeToolTab === 'layout' && (
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {LAYOUT_OPTIONS.map(l => (
+                              <button key={l.id} onClick={() => updateSettings({ layout: l.id as PreviewSettings['layout'] })}
+                                style={{ flex: 1, padding: '10px 6px', borderRadius: 10, cursor: 'pointer', textAlign: 'center', border: 'none', transition: 'all 0.15s',
+                                  background: previewSettings.layout === l.id ? '#f5f3ff' : '#fff',
+                                  outline: previewSettings.layout === l.id ? '2px solid #8b5cf6' : '1.5px solid rgba(139,92,246,0.18)',
+                                  outlineOffset: previewSettings.layout === l.id ? 1 : 0,
+                                }}
+                              >
+                                <div style={{ fontSize: 20, marginBottom: 4 }}>{l.icon}</div>
+                                <p style={{ fontSize: 11, fontWeight: 700, color: previewSettings.layout === l.id ? '#8b5cf6' : '#4c4879', margin: 0 }}>{l.label}</p>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Media tab */}
+                        {activeToolTab === 'media' && (
+                          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                            {/* Images */}
+                            <div style={{ flex: '1 1 180px' }}>
+                              <p style={{ fontSize: 11, fontWeight: 700, color: '#4c4879', marginBottom: 6 }}>📷 Images</p>
+                              <div style={{ display: 'flex', gap: 5, marginBottom: 6 }}>
+                                <input value={imageUrlInput} onChange={e => setImageUrlInput(e.target.value)} placeholder="Paste image URL…"
+                                  onKeyDown={e => e.key === 'Enter' && addImage()}
+                                  style={{ flex: 1, padding: '5px 8px', borderRadius: 7, border: '1px solid rgba(139,92,246,0.2)', fontSize: 12, outline: 'none', minWidth: 0 }} />
+                                <button onClick={addImage} style={{ padding: '5px 10px', borderRadius: 7, background: '#8b5cf6', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Add</button>
+                              </div>
+                              {previewImages.map((url, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+                                  <img src={url} alt="" style={{ width: 36, height: 28, objectFit: 'cover', borderRadius: 4 }} onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />
+                                  <span style={{ flex: 1, fontSize: 10, color: '#4c4879', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{url.split('/').pop()}</span>
+                                  <button onClick={() => setPreviewImages(prev => prev.filter((_, j) => j !== i))} style={{ color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>×</button>
+                                </div>
+                              ))}
+                            </div>
+                            {/* Videos */}
+                            <div style={{ flex: '1 1 180px' }}>
+                              <p style={{ fontSize: 11, fontWeight: 700, color: '#4c4879', marginBottom: 6 }}>🎥 YouTube</p>
+                              <div style={{ display: 'flex', gap: 5, marginBottom: 6 }}>
+                                <input value={videoUrlInput} onChange={e => setVideoUrlInput(e.target.value)} placeholder="Paste YouTube URL…"
+                                  onKeyDown={e => e.key === 'Enter' && addVideo()}
+                                  style={{ flex: 1, padding: '5px 8px', borderRadius: 7, border: '1px solid rgba(139,92,246,0.2)', fontSize: 12, outline: 'none', minWidth: 0 }} />
+                                <button onClick={addVideo} style={{ padding: '5px 10px', borderRadius: 7, background: '#8b5cf6', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Add</button>
+                              </div>
+                              {previewVideos.map((url, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+                                  <span style={{ flex: 1, fontSize: 10, color: '#4c4879', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{url}</span>
+                                  <button onClick={() => setPreviewVideos(prev => prev.filter((_, j) => j !== i))} style={{ color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>×</button>
+                                </div>
+                              ))}
+                            </div>
+                            {/* Audio */}
+                            <div style={{ flex: '1 1 140px' }}>
+                              <p style={{ fontSize: 11, fontWeight: 700, color: '#4c4879', marginBottom: 6 }}>🎵 Audio</p>
+                              <input ref={audioFileRef} type="file" accept="audio/*" style={{ display: 'none' }} onChange={e => {
+                                const file = e.target.files?.[0]
+                                if (file) setPreviewAudio(URL.createObjectURL(file))
+                              }} />
+                              <button onClick={() => audioFileRef.current?.click()}
+                                style={{ width: '100%', padding: '6px 8px', borderRadius: 7, border: '1.5px dashed rgba(139,92,246,0.3)', fontSize: 12, color: '#8b5cf6', background: '#f5f3ff', cursor: 'pointer', fontWeight: 600, transition: 'all 0.15s' }}>
+                                {previewAudio ? '✓ Audio loaded' : '+ Upload audio'}
+                              </button>
+                              {previewAudio && (
+                                <button onClick={() => setPreviewAudio('')} style={{ marginTop: 4, fontSize: 10, color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove</button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Preview Content */}
+                <div style={{ flex: 1, overflowY: 'auto', background: previewSettings.bgColor, transition: 'background 0.3s' }}>
                   {!hasContent ? (
-                    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#a5a3c0' }}>
+                    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
                       <div style={{ width: 64, height: 64, borderRadius: 20, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
                         <Sparkles size={28} color="#c4b5fd" />
                       </div>
                       <p style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 16, color: '#1e1b4b', marginBottom: 8 }}>Your content will appear here</p>
-                      <p style={{ fontSize: 13, maxWidth: 300 }}>Tell the AI what your {typeLabels[type]} is about to generate a complete first draft.</p>
+                      <p style={{ fontSize: 13, color: '#a5a3c0', maxWidth: 300 }}>Tell the AI what your {typeLabels[type]} is about to generate a complete first draft.</p>
                     </div>
                   ) : (
-                    <div>
-                      <div style={{ marginBottom: 16 }}>
-                        <p style={{ fontSize: 11, fontWeight: 700, color: '#8b5cf6', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Title</p>
-                        <h2 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 800, fontSize: 22, color: '#1e1b4b', lineHeight: 1.3 }}>{aiTitle || '—'}</h2>
-                      </div>
-                      {aiDescription && (
-                        <div style={{ marginBottom: 20, padding: '14px', background: '#f5f3ff', borderRadius: 12, border: '1px solid rgba(139,92,246,0.12)' }}>
-                          <p style={{ fontSize: 11, fontWeight: 700, color: '#8b5cf6', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Description</p>
-                          <p style={{ fontSize: 14, color: '#4c4879', lineHeight: 1.7 }}>{aiDescription}</p>
+                    <div style={{
+                      maxWidth: previewSettings.layout === 'magazine' ? 900 : previewSettings.layout === 'minimal' ? 600 : 780,
+                      margin: '0 auto',
+                      padding: previewSettings.layout === 'minimal' ? '48px 40px' : previewSettings.layout === 'bold' ? '32px 28px' : '32px 36px',
+                    }}>
+
+                      {/* Magazine header strip */}
+                      {previewSettings.layout === 'magazine' && (
+                        <div style={{ background: `linear-gradient(135deg, ${previewSettings.accentColor}, ${previewSettings.accentColor}99)`, borderRadius: 12, padding: '20px 28px', marginBottom: 28 }}>
+                          <p style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.75)', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 8 }}>{typeLabels[type].toUpperCase()}</p>
+                          <h1 style={{ fontFamily: previewSettings.fontFamily, fontSize: previewSettings.fontSize * 2.2, color: '#fff', fontWeight: 800, lineHeight: 1.2, margin: 0 }}>{aiTitle}</h1>
                         </div>
                       )}
-                      <div style={{ height: 1, background: 'rgba(139,92,246,0.1)', margin: '20px 0' }} />
-                      <div>
-                        <p style={{ fontSize: 11, fontWeight: 700, color: '#8b5cf6', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 }}>Content Preview</p>
-                        <div style={{ fontSize: 13, color: '#1e1b4b', lineHeight: 1.8, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                          {aiContent.slice(0, 2000)}{aiContent.length > 2000 ? '\n\n…[content continues in your download]' : ''}
+
+                      {/* Standard title (non-magazine) */}
+                      {previewSettings.layout !== 'magazine' && (
+                        <div style={{ marginBottom: 20, paddingBottom: previewSettings.layout === 'bold' ? 16 : 0, borderBottom: previewSettings.layout === 'bold' ? `3px solid ${previewSettings.accentColor}` : 'none' }}>
+                          <p style={{ fontSize: 10, fontWeight: 700, color: previewSettings.accentColor, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>{typeLabels[type]}</p>
+                          <h1 style={{ fontFamily: previewSettings.fontFamily, fontSize: previewSettings.layout === 'bold' ? previewSettings.fontSize * 2.4 : previewSettings.fontSize * 2, color: previewSettings.headingColor, fontWeight: 800, lineHeight: 1.2, margin: 0 }}>
+                            {aiTitle || '—'}
+                          </h1>
                         </div>
+                      )}
+
+                      {/* Description */}
+                      {aiDescription && (
+                        <div style={{ marginBottom: 24, padding: '14px 18px', background: `${previewSettings.accentColor}14`, borderRadius: 10, borderLeft: `3px solid ${previewSettings.accentColor}` }}>
+                          <p style={{ fontFamily: previewSettings.fontFamily, fontSize: previewSettings.fontSize, color: previewSettings.textColor, lineHeight: 1.7, margin: 0, fontStyle: 'italic' }}>{aiDescription}</p>
+                        </div>
+                      )}
+
+                      {/* Embedded Images */}
+                      {previewImages.length > 0 && (
+                        <div style={{ display: 'grid', gridTemplateColumns: previewImages.length > 1 ? '1fr 1fr' : '1fr', gap: 10, marginBottom: 24 }}>
+                          {previewImages.map((url, i) => (
+                            <div key={i} style={{ position: 'relative' }}>
+                              <img src={url} alt="" style={{ width: '100%', borderRadius: 10, objectFit: 'cover', maxHeight: 240 }} onError={e => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = 'none' }} />
+                              <button onClick={() => setPreviewImages(prev => prev.filter((_, j) => j !== i))}
+                                style={{ position: 'absolute', top: 6, right: 6, width: 22, height: 22, borderRadius: '50%', background: 'rgba(0,0,0,0.5)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Embedded Videos */}
+                      {previewVideos.length > 0 && (
+                        <div style={{ marginBottom: 24, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                          {previewVideos.map((url, i) => {
+                            const embed = getYouTubeEmbedUrl(url)
+                            return embed ? (
+                              <div key={i} style={{ position: 'relative', borderRadius: 10, overflow: 'hidden' }}>
+                                <iframe src={embed} style={{ width: '100%', height: 220, border: 'none' }} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
+                                <button onClick={() => setPreviewVideos(prev => prev.filter((_, j) => j !== i))}
+                                  style={{ position: 'absolute', top: 6, right: 6, width: 22, height: 22, borderRadius: '50%', background: 'rgba(0,0,0,0.5)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>×</button>
+                              </div>
+                            ) : (
+                              <div key={i} style={{ padding: '10px 14px', background: `${previewSettings.accentColor}14`, borderRadius: 10, fontSize: 12, color: previewSettings.textColor }}>
+                                🎥 Invalid YouTube URL: {url}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+
+                      {/* Embedded Audio */}
+                      {previewAudio && (
+                        <div style={{ marginBottom: 24 }}>
+                          <audio controls src={previewAudio} style={{ width: '100%', borderRadius: 8 }} />
+                        </div>
+                      )}
+
+                      <div style={{ height: 1, background: `${previewSettings.accentColor}22`, margin: '20px 0' }} />
+
+                      {/* Content */}
+                      <div>
+                        {renderContentLines(aiContent)}
                       </div>
                     </div>
                   )}
                 </div>
+
               </div>
             </motion.div>
           )}
