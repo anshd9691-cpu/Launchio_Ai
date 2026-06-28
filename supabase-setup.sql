@@ -183,6 +183,27 @@ CREATE POLICY "Authenticated users can review"
 CREATE POLICY "Reviewers can delete own reviews"
   ON public.reviews FOR DELETE USING (auth.uid() = reviewer_id);
 
+-- ── 7. Creator Payouts table (encrypted, server-only access) ──
+CREATE TABLE IF NOT EXISTS public.creator_payouts (
+  id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id      text        NOT NULL UNIQUE,
+  payout_type     text        NOT NULL CHECK (payout_type IN ('paypal','bank')),
+  encrypted_iv    text        NOT NULL,
+  encrypted_tag   text        NOT NULL,
+  encrypted_data  text        NOT NULL,
+  masked_display  text        NOT NULL,
+  currency        text        NOT NULL DEFAULT 'USD' CHECK (currency IN ('USD','EUR')),
+  created_at      timestamptz DEFAULT now(),
+  updated_at      timestamptz DEFAULT now()
+);
+
+-- Disable all direct RLS access — only server-side (service key) can read/write
+ALTER TABLE public.creator_payouts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "No direct access to payouts" ON public.creator_payouts;
+CREATE POLICY "No direct access to payouts"
+  ON public.creator_payouts FOR ALL USING (false);
+
 -- ── Done! ─────────────────────────────────────────────────────
 SELECT 'Setup complete! Products in table: ' || count(*)::text AS result
 FROM public.products;

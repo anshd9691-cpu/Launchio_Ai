@@ -3,6 +3,7 @@ import cors from 'cors'
 import { Resend } from 'resend'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import pptxgen from 'pptxgenjs'
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto'
 
 const app = express()
 app.use(cors())
@@ -936,6 +937,144 @@ app.delete('/api/admin/products/:id', requireAdmin, async (req, res) => {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
     })
     if (!r.ok) return res.status(500).json({ error: 'Delete failed' })
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYOUT DETAILS — encrypted server-side storage
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Derive a stable 32-byte AES-256 key from the Supabase anon key
+function getPayoutEncryptionKey() {
+  const base = process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'launchio-fallback-key-do-not-use-in-production'
+  return createHash('sha256').update(`launchio-payout-v1:${base}`).digest()
+}
+
+function encryptPayoutData(data) {
+  const key = getPayoutEncryptionKey()
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(data), 'utf8'),
+    cipher.final(),
+  ])
+  const tag = cipher.getAuthTag()
+  return {
+    iv: iv.toString('hex'),
+    tag: tag.toString('hex'),
+    data: encrypted.toString('hex'),
+  }
+}
+
+function decryptPayoutData(enc) {
+  try {
+    const key = getPayoutEncryptionKey()
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(enc.iv, 'hex'))
+    decipher.setAuthTag(Buffer.from(enc.tag, 'hex'))
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(enc.data, 'hex')),
+      decipher.final(),
+    ])
+    return JSON.parse(decrypted.toString('utf8'))
+  } catch {
+    return null
+  }
+}
+
+function maskPayoutDisplay(type, plainData) {
+  if (type === 'paypal') {
+    const email = plainData.paypal_email || ''
+    const [local, domain] = email.split('@')
+    if (!domain) return '****@****'
+    const masked = local.length <= 3 ? '****' : local.slice(0, 2) + '****'
+    return `PayPal: ${masked}@${domain}`
+  }
+  if (type === 'bank') {
+    const acct = plainData.bank_account || ''
+    return `Bank: ****${acct.slice(-4)} · ${plainData.bank_name || ''}`
+  }
+  return '****'
+}
+
+// POST /api/payout — save encrypted payout details
+app.post('/api/payout', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.status(401).json({ error: 'Unauthorized' })
+  const userData = await verifySupabaseJWT(token)
+  if (!userData?.user) return res.status(401).json({ error: 'Invalid token' })
+  const creatorId = userData.user.id
+
+  const { type, currency, paypal_email, bank_holder, bank_account, bank_routing, bank_name } = req.body
+  if (!type || !['paypal', 'bank'].includes(type)) return res.status(400).json({ error: 'Invalid payout type' })
+  if (!currency || !['USD', 'EUR'].includes(currency)) return res.status(400).json({ error: 'Currency must be USD or EUR' })
+
+  const plainData = { paypal_email, bank_holder, bank_account, bank_routing, bank_name }
+  const enc = encryptPayoutData(plainData)
+  const masked = maskPayoutDisplay(type, plainData)
+
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/creator_payouts?creator_id=eq.${creatorId}`, {
+      method: 'DELETE',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    })
+    const ins = await fetch(`${SUPABASE_URL}/rest/v1/creator_payouts`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json', Prefer: 'return=representation',
+      },
+      body: JSON.stringify({
+        creator_id: creatorId, payout_type: type,
+        encrypted_iv: enc.iv, encrypted_tag: enc.tag, encrypted_data: enc.data,
+        masked_display: masked, currency, updated_at: new Date().toISOString(),
+      }),
+    })
+    if (!ins.ok) {
+      const txt = await ins.text()
+      return res.status(500).json({ error: 'Failed to save payout details' })
+    }
+    return res.json({ ok: true, masked, currency })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/payout/status — check if creator has payout info
+app.get('/api/payout/status', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.status(401).json({ error: 'Unauthorized' })
+  const userData = await verifySupabaseJWT(token)
+  if (!userData?.user) return res.status(401).json({ error: 'Invalid token' })
+  const creatorId = userData.user.id
+
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/creator_payouts?creator_id=eq.${creatorId}&select=payout_type,masked_display,currency`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Accept: 'application/json' },
+    })
+    const rows = await r.json()
+    if (!rows?.length) return res.json({ has_payout: false })
+    const row = rows[0]
+    return res.json({ has_payout: true, masked: row.masked_display, payout_type: row.payout_type, currency: row.currency })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/payout — remove payout info
+app.delete('/api/payout', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.status(401).json({ error: 'Unauthorized' })
+  const userData = await verifySupabaseJWT(token)
+  if (!userData?.user) return res.status(401).json({ error: 'Invalid token' })
+  const creatorId = userData.user.id
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/creator_payouts?creator_id=eq.${creatorId}`, {
+      method: 'DELETE',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    })
     return res.json({ ok: true })
   } catch (err) {
     return res.status(500).json({ error: err.message })

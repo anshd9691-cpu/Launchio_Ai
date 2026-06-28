@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, TrendingUp, Package, DollarSign, Eye, Trash2, ExternalLink, BarChart3, Download, Edit, ShoppingBag } from 'lucide-react'
+import { Plus, TrendingUp, Package, DollarSign, Eye, Trash2, ExternalLink, BarChart3, Download, Edit, ShoppingBag, CreditCard, AlertTriangle, CheckCircle } from 'lucide-react'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 import { supabase } from '@/lib/supabase'
 import type { Product } from '@/lib/supabase'
 
-type TabType = 'products' | 'earnings' | 'purchases'
+type TabType = 'products' | 'earnings' | 'purchases' | 'payout'
 
 interface Purchase {
   id: string
@@ -44,6 +44,27 @@ export default function DashboardPage() {
   const [purchasesLoading, setPurchasesLoading] = useState(false)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [hasPayout, setHasPayout] = useState<boolean | null>(null)
+  const [payoutMasked, setPayoutMasked] = useState<string | null>(null)
+  const [payoutCurrency, setPayoutCurrency] = useState<string>('USD')
+  const [payoutType, setPayoutType] = useState<string | null>(null)
+
+  const checkPayoutStatus = useCallback(async (token: string) => {
+    try {
+      const res = await fetch('/api/payout/status', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const json = await res.json()
+      setHasPayout(json.has_payout ?? false)
+      if (json.has_payout) {
+        setPayoutMasked(json.masked ?? null)
+        setPayoutCurrency(json.currency ?? 'USD')
+        setPayoutType(json.payout_type ?? null)
+      }
+    } catch {
+      setHasPayout(false)
+    }
+  }, [])
 
   const fetchData = useCallback(async (uid: string, email: string) => {
     const [productsRes, salesRes] = await Promise.all([
@@ -94,8 +115,9 @@ export default function DashboardPage() {
       setUserToken(session.access_token)
       fetchData(session.user.id, session.user.email ?? '')
       fetchMyPurchases(session.access_token)
+      checkPayoutStatus(session.access_token)
     })
-  }, [navigate, fetchData, fetchMyPurchases])
+  }, [navigate, fetchData, fetchMyPurchases, checkPayoutStatus])
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this product? This cannot be undone.')) return
@@ -107,6 +129,10 @@ export default function DashboardPage() {
 
   const handleToggleStatus = async (product: Product) => {
     const newStatus = product.status === 'published' ? 'draft' : 'published'
+    if (newStatus === 'published' && !hasPayout) {
+      navigate('/payout-setup')
+      return
+    }
     await supabase.from('products').update({ status: newStatus }).eq('id', product.id)
     setProducts(prev => prev.map(p => p.id === product.id ? { ...p, status: newStatus } : p))
   }
@@ -179,11 +205,12 @@ export default function DashboardPage() {
             </div>
 
             {/* Tabs */}
-            <div style={{ display: 'flex', gap: 0, marginTop: 28, borderBottom: '2px solid rgba(139,92,246,0.1)' }}>
+            <div style={{ display: 'flex', gap: 0, marginTop: 28, borderBottom: '2px solid rgba(139,92,246,0.1)', flexWrap: 'wrap' }}>
               {([
                 ['products', 'My Products', <Package size={15} />],
                 ['earnings', 'Earnings', <BarChart3 size={15} />],
                 ['purchases', 'My Purchases', <ShoppingBag size={15} />],
+                ['payout', 'Payout Details', <CreditCard size={15} />],
               ] as const).map(([t, label, icon]) => (
                 <button key={t} onClick={() => setTab(t as TabType)} style={{
                   display: 'flex', alignItems: 'center', gap: 7, padding: '10px 20px', fontSize: 14, fontWeight: 700,
@@ -205,6 +232,27 @@ export default function DashboardPage() {
             {/* ── My Products tab ─────────────────────────────────────────── */}
             {tab === 'products' && (
               <motion.div key="products" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+
+                {/* Payout warning banner */}
+                {hasPayout === false && (
+                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 20px', borderRadius: 16, background: '#fffbeb', border: '1.5px solid #fcd34d', marginBottom: 24, flexWrap: 'wrap' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <AlertTriangle size={18} color="#d97706" />
+                      <div>
+                        <p style={{ fontSize: 13, fontWeight: 700, color: '#92400e', marginBottom: 2 }}>Payout details required to publish</p>
+                        <p style={{ fontSize: 12, color: '#a16207' }}>Add your PayPal or bank info to start earning from sales.</p>
+                      </div>
+                    </div>
+                    <Link to="/payout-setup"
+                      style={{ padding: '8px 16px', borderRadius: 10, background: '#d97706', color: '#fff', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' }}
+                    >
+                      Add Payout Info
+                    </Link>
+                  </motion.div>
+                )}
+
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
                   <h2 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 18, color: '#1e1b4b' }}>Your Products</h2>
                   <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}>
@@ -395,6 +443,69 @@ export default function DashboardPage() {
                     ))}
                   </div>
                 )}
+              </motion.div>
+            )}
+
+            {/* ── Payout Details tab ───────────────────────────────────────── */}
+            {tab === 'payout' && (
+              <motion.div key="payout" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+                <div style={{ maxWidth: 560 }}>
+                  <h2 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 18, color: '#1e1b4b', marginBottom: 8 }}>Payout Details</h2>
+                  <p style={{ color: '#4c4879', fontSize: 14, marginBottom: 28 }}>Your payout info is encrypted and stored securely. Only you can manage it.</p>
+
+                  {hasPayout === null && (
+                    <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+                      <div style={{ width: 32, height: 32, border: '3px solid #e9d5ff', borderTopColor: '#8b5cf6', borderRadius: '50%' }} className="spin" />
+                    </div>
+                  )}
+
+                  {hasPayout === true && (
+                    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                      className="card-glass" style={{ borderRadius: 20, padding: '28px 28px', marginBottom: 20 }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
+                        <div style={{ width: 46, height: 46, borderRadius: 14, background: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <CheckCircle size={24} color="#16a34a" />
+                        </div>
+                        <div>
+                          <p style={{ fontSize: 11, fontWeight: 700, color: '#16a34a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 3 }}>Payout Method Active</p>
+                          <p style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 700, fontSize: 16, color: '#1e1b4b' }}>{payoutMasked}</p>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                        <div style={{ padding: '14px', borderRadius: 14, background: '#f5f3ff' }}>
+                          <p style={{ fontSize: 11, color: '#8b5cf6', fontWeight: 700, marginBottom: 4 }}>Currency</p>
+                          <p style={{ fontSize: 16, fontWeight: 800, color: '#1e1b4b' }}>{payoutCurrency === 'USD' ? '$ USD' : '€ EUR'}</p>
+                        </div>
+                        <div style={{ padding: '14px', borderRadius: 14, background: '#f5f3ff' }}>
+                          <p style={{ fontSize: 11, color: '#8b5cf6', fontWeight: 700, marginBottom: 4 }}>Payout Rate</p>
+                          <p style={{ fontSize: 16, fontWeight: 800, color: '#1e1b4b' }}>70% of sales</p>
+                        </div>
+                      </div>
+                      <p style={{ fontSize: 12, color: '#a5a3c0', marginTop: 16 }}>
+                        Full account details are encrypted and never shown here for security.
+                      </p>
+                    </motion.div>
+                  )}
+
+                  {hasPayout === false && (
+                    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                      style={{ textAlign: 'center', padding: '48px 24px', background: '#fffbeb', borderRadius: 24, border: '2px dashed #fcd34d', marginBottom: 20 }}
+                    >
+                      <AlertTriangle size={36} color="#d97706" style={{ margin: '0 auto 14px', display: 'block' }} />
+                      <h3 style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 800, fontSize: 18, color: '#92400e', marginBottom: 8 }}>No payout details added</h3>
+                      <p style={{ color: '#a16207', fontSize: 14, marginBottom: 24 }}>You must add payout details before you can publish any product.</p>
+                    </motion.div>
+                  )}
+
+                  <Link to="/payout-setup"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 24px', borderRadius: 14, fontSize: 14, fontWeight: 700 }}
+                    className="btn-gradient"
+                  >
+                    <CreditCard size={16} />
+                    {hasPayout ? 'Update Payout Details' : 'Add Payout Details'}
+                  </Link>
+                </div>
               </motion.div>
             )}
 

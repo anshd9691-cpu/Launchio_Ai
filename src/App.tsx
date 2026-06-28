@@ -9,6 +9,7 @@ import ProductPage from './pages/ProductPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import AdminPage from './pages/AdminPage'
+import PayoutPage from './pages/PayoutPage'
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/control-x7k9" element={<AdminPage />} />
+        <Route path="/payout-setup" element={<PayoutPage />} />
       </Routes>
     </BrowserRouter>
   )

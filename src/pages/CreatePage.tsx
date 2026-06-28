@@ -113,6 +113,8 @@ const typeLabels: Record<string, string> = {
 export default function CreatePage() {
   const navigate = useNavigate()
   const [user, setUser] = useState<{ id: string; email: string } | null>(null)
+  const [userToken, setUserToken] = useState<string | null>(null)
+  const [hasPayout, setHasPayout] = useState<boolean | null>(null)
   const [step, setStep] = useState<Step>(1)
   const [type, setType] = useState<ProductType>('ebook')
   const [showTemplates, setShowTemplates] = useState(false)
@@ -162,9 +164,18 @@ export default function CreatePage() {
   useEffect(() => { messagesRef.current = messages }, [messages])
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) navigate('/login')
-      else setUser({ id: data.user.id, email: data.user.email ?? '' })
+    supabase.auth.getSession().then(async ({ data }) => {
+      const session = data?.session
+      if (!session?.user) { navigate('/login'); return }
+      setUser({ id: session.user.id, email: session.user.email ?? '' })
+      setUserToken(session.access_token)
+      try {
+        const res = await fetch('/api/payout/status', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        const json = await res.json()
+        setHasPayout(json.has_payout ?? false)
+      } catch { setHasPayout(false) }
     })
     fetch('/api/schema-check').then(r => r.json()).then(j => setSchemaReady(j.ready)).catch(() => setSchemaReady(null))
   }, [navigate])
@@ -392,6 +403,10 @@ export default function CreatePage() {
   const handlePublish = async () => {
     if (!user) return
     if (!aiTitle.trim()) { setPublishError('AI needs to generate a title first.'); return }
+    if (hasPayout === false) {
+      navigate('/payout-setup')
+      return
+    }
     setPublishing(true); setPublishError('')
 
     try {

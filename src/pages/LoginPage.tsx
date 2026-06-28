@@ -14,17 +14,60 @@ function OAuthDivider() {
   )
 }
 
-function OAuthButton({ provider, label, icon }: { provider: 'google' | 'github'; label: string; icon: React.ReactNode }) {
+function OAuthButton({
+  provider,
+  label,
+  icon,
+  onError,
+}: {
+  provider: 'google' | 'github'
+  label: string
+  icon: React.ReactNode
+  onError: (msg: string) => void
+}) {
   const [loading, setLoading] = useState(false)
+
   const handleClick = async () => {
     setLoading(true)
-    await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: `${window.location.origin}/dashboard` } })
+    onError('')
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: `${window.location.origin}/dashboard`,
+          skipBrowserRedirect: false,
+        },
+      })
+      if (error) {
+        onError(
+          error.message.includes('provider is not enabled')
+            ? `${provider === 'google' ? 'Google' : 'GitHub'} login is not yet configured. Please use email/password sign-in.`
+            : error.message
+        )
+        setLoading(false)
+      }
+    } catch (err: unknown) {
+      onError(err instanceof Error ? err.message : 'OAuth login failed')
+      setLoading(false)
+    }
   }
+
   return (
-    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleClick} disabled={loading}
-      style={{ width: '100%', padding: '12px 16px', borderRadius: 14, fontSize: 14, fontWeight: 700, border: '1.5px solid rgba(139,92,246,0.25)', background: '#fff', color: '#1e1b4b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, transition: 'all 0.2s', opacity: loading ? 0.75 : 1 }}
+    <motion.button
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={handleClick}
+      disabled={loading}
+      style={{
+        width: '100%', padding: '12px 16px', borderRadius: 14, fontSize: 14, fontWeight: 700,
+        border: '1.5px solid rgba(139,92,246,0.25)', background: '#fff', color: '#1e1b4b',
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        gap: 10, transition: 'all 0.2s', opacity: loading ? 0.75 : 1,
+      }}
     >
-      {loading ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid #e9d5ff', borderTopColor: '#8b5cf6', borderRadius: '50%' }} className="spin" /> : icon}
+      {loading
+        ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid #e9d5ff', borderTopColor: '#8b5cf6', borderRadius: '50%' }} className="spin" />
+        : icon}
       {label}
     </motion.button>
   )
@@ -81,8 +124,8 @@ export default function LoginPage() {
 
           {/* OAuth buttons */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
-            <OAuthButton provider="google" label="Continue with Google" icon={<GoogleIcon />} />
-            <OAuthButton provider="github" label="Continue with GitHub" icon={<GitHubIcon />} />
+            <OAuthButton provider="google" label="Continue with Google" icon={<GoogleIcon />} onError={setError} />
+            <OAuthButton provider="github" label="Continue with GitHub" icon={<GitHubIcon />} onError={setError} />
           </div>
 
           <OAuthDivider />
